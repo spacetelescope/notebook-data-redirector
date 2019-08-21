@@ -1,8 +1,0 @@
-webhook_receiver.py is the proof-of-concept webhook receiver lambda that BHayden used in a private AWS account for prototyping. It can be used as an example for how to connect to the Box API.
-
-In order to create the environment for the lambda, I launched an EC2 instance with the Amazon Linux 2 AMI, then followed the instructions here to setup a dependency .zip file:
-https://docs.aws.amazon.com/lambda/latest/dg/lambda-python-how-to-create-deployment-package.html
-
-The only install command needed for the box sdk is:
-pip install "boxsdk[jwt]"
-
