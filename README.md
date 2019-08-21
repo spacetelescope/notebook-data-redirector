@@ -19,7 +19,16 @@ The SAM CLI and sample events make it easy to test the webhook function locally:
 
 ```console
 $ sam build
-$ sam local invoke "BoxWebhookFunction" -e your-sample-event.json
+$ sam local invoke "BoxWebhookFunction" -e your-sample-event.json -n env.json
 ```
 
-Note that this will interact with the live DynamoDB table, so proceed with caution.
+Where `your-sample-event.json` contains a Box webhook event serialized to JSON, and `env.json` contains
+this:
+
+```json
+{
+    "BoxWebhookFunction": { "MANIFEST_TABLE_NAME": "your-ddb-table-name" }
+}
+```
+
+Note that this will interact the Box API and whatever DynamoDB table you specify, so proceed with caution.
