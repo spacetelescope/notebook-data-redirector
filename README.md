@@ -4,7 +4,7 @@ This is an AWS application that redirects requests to files publicly hosted on B
 
 ## Deployment
 
-To deploy the redirector, first install and configure the [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-install.html) and [Docker](https://docs.docker.com/install/).
+To deploy the redirector, first install and configure the [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/serverless-sam-cli-install.html).
 
 Next, run the following commands:
 
@@ -15,7 +15,7 @@ $ sam deploy --template-file packaged.yaml --capabilities CAPABILITY_IAM --stack
 ```
 ## Local testing
 
-The SAM CLI and sample events make it easy to test the webhook function locally:
+The SAM CLI and sample events make it easy to test the webhook function locally.  The CLI uses Docker to run the Lambda code in a container, so you'll need to [install it](https://docs.docker.com/install/).
 
 ```console
 $ sam build
