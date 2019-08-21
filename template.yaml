@@ -34,6 +34,7 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTableName
+          SECRET_ARN: !Ref SecretArn
       Events:
         BoxWebhookEvent:
           Type: Api

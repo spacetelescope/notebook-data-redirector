@@ -4,6 +4,7 @@ import logging
 import json
 
 MANIFEST_TABLE_NAME = os.environ["MANIFEST_TABLE_NAME"]
+SECRET_ARN = os.environ["SECRET_ARN"]
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -13,19 +14,16 @@ def get_secret():
     import base64
     from botocore.exceptions import ClientError
 
-    secret_name = "BoxApiCredentials"
-    region_name = "us-east-1"
-
     # Create a Secrets Manager client
     session = boto3.session.Session()
-    client = session.client(service_name="secretsmanager", region_name=region_name)
+    client = session.client(service_name="secretsmanager")
 
     # In this sample we only handle the specific exceptions for the 'GetSecretValue' API.
     # See https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
     # We rethrow the exception by default.
 
     try:
-        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+        get_secret_value_response = client.get_secret_value(SecretId=SECRET_ARN)
     except ClientError as e:
         if e.response["Error"]["Code"] == "DecryptionFailureException":
             # Secrets Manager can't decrypt the protected secret text using the provided KMS key.

@@ -27,7 +27,10 @@ this:
 
 ```json
 {
-    "BoxWebhookFunction": { "MANIFEST_TABLE_NAME": "your-ddb-table-name" }
+    "BoxWebhookFunction": {
+        "MANIFEST_TABLE_NAME": "your-ddb-table-name",
+        "SECRET_ARN": "your-secret-arn"
+    }
 }
 ```
 
