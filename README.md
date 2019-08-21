@@ -11,7 +11,7 @@ Next, run the following commands:
 ```console
 $ sam build
 $ sam package --s3-bucket your-s3-bucket --output-template packaged.yaml
-$ sam deploy --template-file packaged.yaml --capabilities CAPABILITY_IAM --stack-name your-cloud-formation-stack
+$ sam deploy --template-file packaged.yaml --capabilities CAPABILITY_IAM --stack-name your-cloud-formation-stack --parameter-overrides SecretArn=your-secret-arn ManifestTableName=your-ddb-table-name
 ```
 ## Local testing
 
