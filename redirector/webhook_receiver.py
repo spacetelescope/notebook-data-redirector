@@ -153,9 +153,7 @@ def lambda_handler(event, context):
 
         filename, box_hash = get_file_id_and_hash(body, client)
 
-        all_items = ddb.query(KeyConditionExpression=Key("Filename").eq(filename))
-        for item in all_items["Items"]:
-            ddb.delete_item(Key=item)
+        ddb.delete_item(Key={"filename": filename})
 
     elif body["trigger"] == "SHARED_LINK.UPDATED":
         logger.info(
