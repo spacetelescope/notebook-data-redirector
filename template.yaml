@@ -1,0 +1,62 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  notebook-data-redirector
+
+  SAM template for notebook data redirector
+
+Parameters:
+  ManifestTableName:
+    Type: String
+    Description: Name of the DynamoDB manifest table
+  SecretArn:
+    Type: String
+    Description: ARN of the Secrets Manager secret containing Box JWT credentials
+
+Resources:
+  ManifestTable:
+    Type: AWS::Serverless::SimpleTable
+    Properties:
+      TableName: !Ref ManifestTableName
+      PrimaryKey:
+        Name: filename
+        Type: String
+
+  BoxWebhookFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      MemorySize: 128
+      # Box retries after 30 seconds, so we should give up at that point, too:
+      Timeout: 30
+      Handler: webhook_receiver.lambda_handler
+      Runtime: python3.7
+      CodeUri: redirector/
+      Environment:
+        Variables:
+          MANIFEST_TABLE_NAME: !Ref ManifestTableName
+          SECRET_ARN: !Ref SecretArn
+      Events:
+        BoxWebhookEvent:
+          Type: Api
+          Properties:
+            Path: /webhook
+            Method: post
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ManifestTableName
+        - AWSSecretsManagerGetSecretValuePolicy:
+            SecretArn: !Ref SecretArn
+
+Outputs:
+  RedirectorApi:
+    Description: "API Gateway endpoint URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/"
+  BoxWebhookFunction:
+    Description: "BoxWebhookFunction ARN"
+    Value: !GetAtt BoxWebhookFunction.Arn
+  BoxWebhookFunctionIamRole:
+    Description: "Implicit IAM Role created for BoxWebhookFunction"
+    Value: !GetAtt BoxWebhookFunctionRole.Arn
+  DynamoDBTableName:
+    Description: "Name of the manifest table in DynamoDB"
+    Value: !Ref ManifestTableName

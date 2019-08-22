@@ -1,30 +1,29 @@
 import boto3
 import os
 import logging
+import json
+
+MANIFEST_TABLE_NAME = os.environ["MANIFEST_TABLE_NAME"]
+SECRET_ARN = os.environ["SECRET_ARN"]
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-
-validate_webhook = False
 
 
 def get_secret():
     import base64
     from botocore.exceptions import ClientError
 
-    secret_name = "BoxApiCredentials"
-    region_name = "us-east-1"
-
     # Create a Secrets Manager client
     session = boto3.session.Session()
-    client = session.client(service_name="secretsmanager", region_name=region_name)
+    client = session.client(service_name="secretsmanager")
 
     # In this sample we only handle the specific exceptions for the 'GetSecretValue' API.
     # See https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
     # We rethrow the exception by default.
 
     try:
-        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+        get_secret_value_response = client.get_secret_value(SecretId=SECRET_ARN)
     except ClientError as e:
         if e.response["Error"]["Code"] == "DecryptionFailureException":
             # Secrets Manager can't decrypt the protected secret text using the provided KMS key.
@@ -51,7 +50,7 @@ def get_secret():
         # Depending on whether the secret is a string or binary, one of these fields will be populated.
         if "SecretString" in get_secret_value_response:
             secret = get_secret_value_response["SecretString"]
-            return eval(secret)
+            return json.loads(secret)
         else:
             logger.error("binary secret not implemented")
             # raise NotImplementedError
@@ -99,12 +98,12 @@ def get_box_client(app_user=True):
         return appClient, WEBHOOK_KEY
 
 
-def get_file_id_and_hash(webhook_event, box_client):
-    file_id = webhook_event["body"]["source"]["item"]["id"]
+def get_file_id_and_hash(event_body, box_client):
+    file_id = event_body["source"]["item"]["id"]
     box_file = box_client.file(file_id=file_id)
     filename = box_file.get().name
 
-    hashed_url = webhook_event["body"]["source"]["url"]
+    hashed_url = event_body["source"]["url"]
     try:
         box_hash = hashed_url.split("/")[-1]
     except AttributeError:
@@ -117,51 +116,48 @@ def get_file_id_and_hash(webhook_event, box_client):
 
 
 def lambda_handler(event, context):
-
+    body = json.loads(event["body"])
     # only get a box client if we're actually going to need one
     handled_triggers = [
         "SHARED_LINK.CREATED",
         "SHARED_LINK.UPDATED",
         "SHARED_LINK.DELETED",
     ]
-    if event["body"]["trigger"] in handled_triggers:
+    if body["trigger"] in handled_triggers:
         client, webhook_key = get_box_client(app_user=True)
         ddb = boto3.resource("dynamodb", region_name="us-east-1").Table(
-            "BoxWebhookTest"
+            MANIFEST_TABLE_NAME
         )
         logger.info(event)
     else:
-        logger.info(f"{event['body']['trigger']} is not supported by this endpoint")
+        logger.info(f"{body['trigger']} is not supported by this endpoint")
         return {"statusCode": 200}
 
-    if validate_webhook:
-        logger.info(event["body"])
-        logger.info(event["headers"])
-        webhook = client.webhook(event["body"]["webhook"]["id"])
-        is_valid = webhook.validate_message(
-            bytes(f"{event['body']}", "utf-8"), event["headers"], webhook_key
-        )
-        if not is_valid:
-            logger.info(f"received invalid webhook")
-            logger.critical(event)
-            return {"statusCode": 200}
+    webhook = client.webhook(body["webhook"]["id"])
+    is_valid = webhook.validate_message(
+        bytes(f"{event['body']}", "utf-8"), event["headers"], webhook_key
+    )
+    if not is_valid:
+        logger.info(f"received invalid webhook")
+        logger.critical(event)
+        return {"statusCode": 200}
 
-    if event["body"]["trigger"] == "SHARED_LINK.CREATED":
-        filename, box_hash = get_file_id_and_hash(event, client)
+    if body["trigger"] == "SHARED_LINK.CREATED":
+        filename, box_hash = get_file_id_and_hash(body, client)
 
-        put_item = {"Filename": filename, "hash": box_hash}
+        put_item = {"filename": filename, "hash": box_hash}
         ddb.put_item(Item=put_item)
 
-    elif event["body"]["trigger"] == "SHARED_LINK.DELETED":
+    elif body["trigger"] == "SHARED_LINK.DELETED":
         from boto3.dynamodb.conditions import Key
 
-        filename, box_hash = get_file_id_and_hash(event, client)
+        filename, box_hash = get_file_id_and_hash(body, client)
 
         all_items = ddb.query(KeyConditionExpression=Key("Filename").eq(filename))
         for item in all_items["Items"]:
             ddb.delete_item(Key=item)
 
-    elif event["body"]["trigger"] == "SHARED_LINK.UPDATED":
+    elif body["trigger"] == "SHARED_LINK.UPDATED":
         logger.info(
             "SHARED_LINK.UPDATED was not implemented because I cannot figure out what triggers them and what the event looks like"
         )
