@@ -13,6 +13,9 @@ $ sam build
 $ sam package --s3-bucket your-s3-bucket --output-template packaged.yaml
 $ sam deploy --template-file packaged.yaml --capabilities CAPABILITY_IAM --stack-name your-cloud-formation-stack --parameter-overrides SecretArn=your-secret-arn ManifestTableName=your-ddb-table-name
 ```
+
+The S3 bucket and Secrets Manager secret must already exist.  The DynamoDB table is created as part of the CloudFormation stack.
+
 ## Local testing
 
 The SAM CLI and sample events make it easy to test the webhook function locally.  The CLI uses Docker to run the Lambda code in a container, so you'll need to [install it](https://docs.docker.com/install/).
