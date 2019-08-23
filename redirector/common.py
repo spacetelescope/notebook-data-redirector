@@ -90,8 +90,8 @@ def delete_file_item(ddb_table, file):
 
 def get_download_url(ddb_table, filename):
     result = ddb_table.get_item(Key={"filename": filename})
-    if result.get('Item'):
-        return result['Item']['download_url']
+    if result.get("Item"):
+        return result["Item"]["download_url"]
     else:
         return None
 

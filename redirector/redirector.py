@@ -8,7 +8,7 @@ LOGGER.setLevel(logging.INFO)
 
 
 def lambda_handler(event, context):
-    filename = event['pathParameters']['filename']
+    filename = event["pathParameters"]["filename"]
 
     LOGGER.info("Received request for %s", filename)
 
@@ -17,12 +17,7 @@ def lambda_handler(event, context):
 
     if download_url:
         LOGGER.info("Redirecting to %s", download_url)
-        return {
-            "statusCode": 302,
-            "headers": {
-                "Location": download_url,
-            },
-        }
+        return {"statusCode": 302, "headers": {"Location": download_url}}
     else:
         LOGGER.info("Not found, returning 404")
-        return { "statusCode": 404 }
+        return {"statusCode": 404}
