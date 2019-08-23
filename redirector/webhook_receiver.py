@@ -1,163 +1,88 @@
-import boto3
-import os
 import logging
 import json
 
-MANIFEST_TABLE_NAME = os.environ["MANIFEST_TABLE_NAME"]
-SECRET_ARN = os.environ["SECRET_ARN"]
-
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+import common
 
 
-def get_secret():
-    import base64
-    from botocore.exceptions import ClientError
+LOGGER = logging.getLogger(__name__)
+LOGGER.setLevel(logging.INFO)
 
-    # Create a Secrets Manager client
-    session = boto3.session.Session()
-    client = session.client(service_name="secretsmanager")
+HANDLED_FILE_TRIGGERS = {
+    "SHARED_LINK.CREATED",
+    "SHARED_LINK.UPDATED",
+    "SHARED_LINK.DELETED",
+    "FILE.TRASHED",
+    "FILE.RESTORED",
+}
 
-    # In this sample we only handle the specific exceptions for the 'GetSecretValue' API.
-    # See https://docs.aws.amazon.com/secretsmanager/latest/apireference/API_GetSecretValue.html
-    # We rethrow the exception by default.
+HANDLED_FOLDER_TRIGGERS = {"FOLDER.RESTORED", "FOLDER.TRASHED"}
 
-    try:
-        get_secret_value_response = client.get_secret_value(SecretId=SECRET_ARN)
-    except ClientError as e:
-        if e.response["Error"]["Code"] == "DecryptionFailureException":
-            # Secrets Manager can't decrypt the protected secret text using the provided KMS key.
-            # Deal with the exception here, and/or rethrow at your discretion.
-            raise e
-        elif e.response["Error"]["Code"] == "InternalServiceErrorException":
-            # An error occurred on the server side.
-            # Deal with the exception here, and/or rethrow at your discretion.
-            raise e
-        elif e.response["Error"]["Code"] == "InvalidParameterException":
-            # You provided an invalid value for a parameter.
-            # Deal with the exception here, and/or rethrow at your discretion.
-            raise e
-        elif e.response["Error"]["Code"] == "InvalidRequestException":
-            # You provided a parameter value that is not valid for the current state of the resource.
-            # Deal with the exception here, and/or rethrow at your discretion.
-            raise e
-        elif e.response["Error"]["Code"] == "ResourceNotFoundException":
-            # We can't find the resource that you asked for.
-            # Deal with the exception here, and/or rethrow at your discretion.
-            raise e
-    else:
-        # Decrypts secret using the associated KMS CMK.
-        # Depending on whether the secret is a string or binary, one of these fields will be populated.
-        if "SecretString" in get_secret_value_response:
-            secret = get_secret_value_response["SecretString"]
-            return json.loads(secret)
-        else:
-            logger.error("binary secret not implemented")
-            # raise NotImplementedError
-            # decoded_binary_secret = base64.b64decode(get_secret_value_response['SecretBinary'])
-            # return decoded_binary_secret
+HANDLED_TRIGGERS = HANDLED_FILE_TRIGGERS | HANDLED_FOLDER_TRIGGERS
 
-
-def get_box_client(app_user=True):
-    from boxsdk import Client, JWTAuth
-
-    secret = get_secret()
-
-    CLIENT_ID = secret["clientID"]
-    CLIENT_SECRET = secret["clientSecret"]
-    PUBLIC_KEY_ID = secret["publicKeyID"]
-    PRIVATE_KEY = secret["privateKey"].replace("\\n", "\n")
-    PASSPHRASE = secret["passphrase"]
-    ENTERPRISE_ID = secret["enterpriseID"]
-    WEBHOOK_KEY = secret["webhook_key"]
-
-    auth = JWTAuth(
-        CLIENT_ID,
-        CLIENT_SECRET,
-        ENTERPRISE_ID,
-        PUBLIC_KEY_ID,
-        rsa_private_key_data=PRIVATE_KEY,
-        rsa_private_key_passphrase=PASSPHRASE,
-    )
-    auth.authenticate_instance()
-
-    client = Client(auth)
-
-    if app_user:
-        users = client.users()
-        try:
-            appuser = users.next()
-        except StopIteration:
-            logger.info(
-                "no app user exists, so the service account will be used as the box api client"
-            )
-            return client
-
-        appClient = client.as_user(appuser)
-
-        return appClient, WEBHOOK_KEY
-
-
-def get_file_id_and_hash(event_body, box_client):
-    file_id = event_body["source"]["item"]["id"]
-    box_file = box_client.file(file_id=file_id)
-    filename = box_file.get().name
-
-    hashed_url = event_body["source"]["url"]
-    try:
-        box_hash = hashed_url.split("/")[-1]
-    except AttributeError:
-        box_hash = None
-        logger.info(
-            f"no hash available for {filename}, likely because the link is lost before the SHARED_LINK.DELETED webhook is sent"
-        )
-
-    return filename, box_hash
+STATUS_SUCCESS = {"statusCode": 200}
 
 
 def lambda_handler(event, context):
-    body = json.loads(event["body"])
-    # only get a box client if we're actually going to need one
-    handled_triggers = [
-        "SHARED_LINK.CREATED",
-        "SHARED_LINK.UPDATED",
-        "SHARED_LINK.DELETED",
-    ]
-    if body["trigger"] in handled_triggers:
-        client, webhook_key = get_box_client(app_user=True)
-        ddb = boto3.resource("dynamodb", region_name="us-east-1").Table(
-            MANIFEST_TABLE_NAME
-        )
-        logger.info(event)
-    else:
-        logger.info(f"{body['trigger']} is not supported by this endpoint")
-        return {"statusCode": 200}
+    LOGGER.info(json.dumps(event))
 
-    webhook = client.webhook(body["webhook"]["id"])
+    raw_body = event["body"]
+    body = json.loads(raw_body)
+    trigger = body["trigger"]
+    webhook_id = body["webhook"]["id"]
+    source = body["source"]
+
+    # The event structure varies by trigger
+    if "item" in source:
+        box_id = source["item"]["id"]
+        box_type = source["item"]["type"]
+    elif "id" in source:
+        box_id = source["id"]
+        box_type = source["type"]
+    else:
+        raise RuntimeError("Missing id field")
+
+    LOGGER.info("Received trigger %s on %s id %s", trigger, box_type, box_id)
+
+    # only get a box client if we're actually going to need one
+    if trigger not in HANDLED_TRIGGERS:
+        LOGGER.info("%s is not supported by this endpoint", trigger)
+        return STATUS_SUCCESS
+
+    client, webhook_key = common.get_box_client()
+    ddb = common.get_ddb_table()
+
+    webhook = client.webhook(webhook_id)
     is_valid = webhook.validate_message(
-        bytes(f"{event['body']}", "utf-8"), event["headers"], webhook_key
+        bytes(raw_body, "utf-8"), event["headers"], webhook_key
     )
     if not is_valid:
-        logger.info(f"received invalid webhook")
-        logger.critical(event)
-        return {"statusCode": 200}
+        LOGGER.critical("Received invalid webhook request")
+        return STATUS_SUCCESS
 
-    if body["trigger"] == "SHARED_LINK.CREATED":
-        filename, box_hash = get_file_id_and_hash(body, client)
+    if trigger in HANDLED_FILE_TRIGGERS:
+        file = common.get_file(client, box_id)
+        if not file:
+            LOGGER.warning("File %s is missing (trashed or deleted)", box_id)
+            common.delete_file_item(ddb, file)
+            return STATUS_SUCCESS
 
-        put_item = {"filename": filename, "hash": box_hash}
-        ddb.put_item(Item=put_item)
+        if common.is_box_file_public(file):
+            common.put_file_item(ddb, file)
+        else:
+            common.delete_file_item(ddb, file)
+    elif trigger in HANDLED_FOLDER_TRIGGERS:
+        folder = common.get_folder(client, box_id)
+        if not folder:
+            LOGGER.warning("Folder %s is missing (trashed or deleted)", box_id)
+            # NOTE(eslavich): The Box API doesn't appear to give us a way to
+            # list the contents of a trashed folder, so we're just going to have
+            # to let the sync lambda clean up the relevant DynamoDB rows.
+            return STATUS_SUCCESS
 
-    elif body["trigger"] == "SHARED_LINK.DELETED":
-        from boto3.dynamodb.conditions import Key
+        for file in common.iterate_files(folder):
+            if common.is_box_file_public(file):
+                common.put_file_item(ddb, file)
+            else:
+                common.delete_file_item(ddb, file)
 
-        filename, box_hash = get_file_id_and_hash(body, client)
-
-        ddb.delete_item(Key={"filename": filename})
-
-    elif body["trigger"] == "SHARED_LINK.UPDATED":
-        logger.info(
-            "SHARED_LINK.UPDATED was not implemented because I cannot figure out what triggers them and what the event looks like"
-        )
-
-    return {"statusCode": 200}
+    return STATUS_SUCCESS

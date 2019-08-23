@@ -11,10 +11,10 @@ Next, run the following commands:
 ```console
 $ sam build
 $ sam package --s3-bucket your-s3-bucket --output-template packaged.yaml
-$ sam deploy --template-file packaged.yaml --capabilities CAPABILITY_IAM --stack-name your-cloud-formation-stack --parameter-overrides SecretArn=your-secret-arn ManifestTableName=your-ddb-table-name
+$ sam deploy --template-file packaged.yaml --capabilities CAPABILITY_IAM --stack-name your-cloud-formation-stack --parameter-overrides SecretArn=your-secret-arn BoxFolderId=your-box-folder-id
 ```
 
-The S3 bucket and Secrets Manager secret must already exist.  The DynamoDB table is created as part of the CloudFormation stack.
+The S3 bucket and Secrets Manager secret must already exist.
 
 ## Local testing
 
@@ -31,8 +31,8 @@ this:
 ```json
 {
     "BoxWebhookFunction": {
-        "MANIFEST_TABLE_NAME": "your-ddb-table-name",
-        "SECRET_ARN": "your-secret-arn"
+        "SECRET_ARN": "your-secret-arn",
+        "BOX_FOLDER_ID": "your-box-folder-id"
     }
 }
 ```
