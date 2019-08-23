@@ -15,9 +15,9 @@ def lambda_handler(event, context):
     ddb_table = common.get_ddb_table()
     download_url = common.get_download_url(ddb_table, filename)
 
-    if download_url:
-        LOGGER.info("Redirecting to %s", download_url)
-        return {"statusCode": 302, "headers": {"Location": download_url}}
-    else:
+    if download_url is None:
         LOGGER.info("Not found, returning 404")
         return {"statusCode": 404}
+    else:
+        LOGGER.info("Redirecting to %s", download_url)
+        return {"statusCode": 302, "headers": {"Location": download_url}}
