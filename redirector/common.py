@@ -109,6 +109,9 @@ def _get_box_resource(callback):
 def iterate_files(folder):
     for item in folder.get_items():
         if item.object_type == "folder":
+            # Here we're recursively calling iterate_files on a nested folder and
+            # receiving an iterator that contains all of its files.  "yield from"
+            # will yield each value from that iterator in turn.
             yield from iterate_files(item)
         elif item.object_type == "file":
             yield item.get()
