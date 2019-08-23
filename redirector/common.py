@@ -88,6 +88,14 @@ def delete_file_item(ddb_table, file):
     ddb_table.delete_item(Key={"filename": file.name})
 
 
+def get_download_url(ddb_table, filename):
+    result = ddb_table.get_item(Key={"filename": filename})
+    if result.get('Item'):
+        return result['Item']['download_url']
+    else:
+        return None
+
+
 def get_file(client, box_file_id):
     return _get_box_resource(lambda: client.file(box_file_id).get())
 
