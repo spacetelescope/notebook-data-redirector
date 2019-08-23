@@ -19,6 +19,7 @@ def get_box_client():
     secret = _get_secret()
 
     # TODO(eslavich): We should pick one of snake_case or camelCase
+    # TODO(eslavich): Document the secret format and setup
     client_id = secret["clientID"]
     client_secret = secret["clientSecret"]
     public_key_id = secret["publicKeyID"]
