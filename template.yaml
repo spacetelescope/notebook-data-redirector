@@ -70,14 +70,39 @@ Resources:
           Properties:
             # Run every 15 minutes
             Schedule: cron(*/15 * * * ? *)
-
       Policies:
         - DynamoDBCrudPolicy:
             TableName: !Ref ManifestTable
         - AWSSecretsManagerGetSecretValuePolicy:
             SecretArn: !Ref SecretArn
 
+  RedirectorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      MemorySize: 128
+      # These should be very quick, since we're only making one DynamoDB read request, but due to the
+      # boxsdk and its dependencies, our distribution package is large and we have the possibility of
+      # a long cold start.
+      Timeout: 15
+      Handler: redirector.lambda_handler
+      Environment:
+        Variables:
+          MANIFEST_TABLE_NAME: !Ref ManifestTable
+      Events:
+        RedirectorEvent:
+          Type: Api
+          Properties:
+            Path: /redirect/{filename+}
+            Method: get
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref ManifestTable
+        # This function should not be contacting Box, so it doesn't need access to the secret.
+
 Outputs:
   BoxWebhookURL:
     Description: "Box webhook URL"
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/webhook"
+  RedirectBaseURL:
+    Description: "Redirector base URL"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/redirect"
