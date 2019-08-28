@@ -7,18 +7,6 @@ import common
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
-HANDLED_FILE_TRIGGERS = {
-    "SHARED_LINK.CREATED",
-    "SHARED_LINK.UPDATED",
-    "SHARED_LINK.DELETED",
-    "FILE.TRASHED",
-    "FILE.RESTORED",
-}
-
-HANDLED_FOLDER_TRIGGERS = {"FOLDER.RESTORED", "FOLDER.TRASHED"}
-
-HANDLED_TRIGGERS = HANDLED_FILE_TRIGGERS | HANDLED_FOLDER_TRIGGERS
-
 STATUS_SUCCESS = {"statusCode": 200}
 
 
@@ -44,7 +32,7 @@ def lambda_handler(event, context):
     LOGGER.info("Received trigger %s on %s id %s", trigger, box_type, box_id)
 
     # only get a box client if we're actually going to need one
-    if trigger not in HANDLED_TRIGGERS:
+    if trigger not in common.HANDLED_TRIGGERS:
         LOGGER.info("%s is not supported by this endpoint", trigger)
         return STATUS_SUCCESS
 
@@ -59,7 +47,7 @@ def lambda_handler(event, context):
         LOGGER.critical("Received invalid webhook request")
         return STATUS_SUCCESS
 
-    if trigger in HANDLED_FILE_TRIGGERS:
+    if trigger in common.HANDLED_FILE_TRIGGERS:
         file = common.get_file(client, box_id)
         if not file:
             LOGGER.warning("File %s is missing (trashed or deleted)", box_id)
@@ -70,7 +58,7 @@ def lambda_handler(event, context):
             common.put_file_item(ddb, file)
         else:
             common.delete_file_item(ddb, file)
-    elif trigger in HANDLED_FOLDER_TRIGGERS:
+    elif trigger in common.HANDLED_FOLDER_TRIGGERS:
         folder = common.get_folder(client, box_id)
         if not folder:
             LOGGER.warning("Folder %s is missing (trashed or deleted)", box_id)

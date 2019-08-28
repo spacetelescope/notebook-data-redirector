@@ -14,27 +14,37 @@ SECRET_ARN = os.environ["SECRET_ARN"]
 MANIFEST_TABLE_NAME = os.environ["MANIFEST_TABLE_NAME"]
 BOX_FOLDER_ID = os.environ["BOX_FOLDER_ID"]
 
+HANDLED_FILE_TRIGGERS = {
+    "SHARED_LINK.CREATED",
+    "SHARED_LINK.UPDATED",
+    "SHARED_LINK.DELETED",
+    "FILE.TRASHED",
+    "FILE.RESTORED",
+}
+
+HANDLED_FOLDER_TRIGGERS = {"FOLDER.RESTORED", "FOLDER.TRASHED"}
+
+HANDLED_TRIGGERS = HANDLED_FILE_TRIGGERS | HANDLED_FOLDER_TRIGGERS
+
 
 def get_box_client():
     secret = _get_secret()
 
-    # TODO(eslavich): We should pick one of snake_case or camelCase
-    # TODO(eslavich): Document the secret format and setup
-    client_id = secret["clientID"]
-    client_secret = secret["clientSecret"]
-    public_key_id = secret["publicKeyID"]
-    private_key = secret["privateKey"].replace("\\n", "\n")
-    passphrase = secret["passphrase"]
-    enterprise_id = secret["enterpriseID"]
-    webhook_key = secret["webhook_key"]
+    client_id = secret["box_client_id"]
+    client_secret = secret["box_client_secret"]
+    enterprise_id = secret["box_enterprise_id"]
+    jwt_key_id = secret["box_jwt_key_id"]
+    rsa_private_key_data = secret["box_rsa_private_key_data"]
+    rsa_private_key_passphrase = secret["box_rsa_private_key_passphrase"]
+    webhook_signature_key = secret["box_webhook_signature_key"]
 
     auth = JWTAuth(
-        client_id,
-        client_secret,
-        enterprise_id,
-        public_key_id,
-        rsa_private_key_data=private_key,
-        rsa_private_key_passphrase=passphrase,
+        client_id=client_id,
+        client_secret=client_secret,
+        enterprise_id=enterprise_id,
+        jwt_key_id=jwt_key_id,
+        rsa_private_key_data=rsa_private_key_data,
+        rsa_private_key_passphrase=rsa_private_key_passphrase,
     )
     auth.authenticate_instance()
 
@@ -51,7 +61,7 @@ def get_box_client():
 
     app_client = client.as_user(app_user)
 
-    return app_client, webhook_key
+    return app_client, webhook_signature_key
 
 
 def is_box_file_public(file):
