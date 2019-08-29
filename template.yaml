@@ -19,9 +19,11 @@ Globals:
     Handler: index.handler
     CodeUri: redirector/
     Environment:
-        Variables:
-          SECRET_ARN: !Ref SecretArn
-          BOX_FOLDER_ID: !Ref BoxFolderId
+      Variables:
+        SECRET_ARN: !Ref SecretArn
+        BOX_FOLDER_ID: !Ref BoxFolderId
+  Api:
+    EndpointConfiguration: REGIONAL
 
 Resources:
   ManifestTable:
@@ -45,7 +47,7 @@ Resources:
         BoxWebhookEvent:
           Type: Api
           Properties:
-            Path: /webhook
+            Path: /webhook_event
             Method: post
       Policies:
         - DynamoDBCrudPolicy:
@@ -102,7 +104,7 @@ Resources:
 Outputs:
   BoxWebhookURL:
     Description: "Box webhook URL"
-    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/webhook"
+    Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/webhook_event"
   RedirectBaseURL:
     Description: "Redirector base URL"
     Value: !Sub "https://${ServerlessRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/redirect"
