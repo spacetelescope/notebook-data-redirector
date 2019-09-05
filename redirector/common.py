@@ -57,7 +57,7 @@ def get_box_client():
         LOGGER.warning(
             "no app user exists, so the service account will be used as the box api client"
         )
-        return client, webhook_key
+        return client, webhook_signature_key
 
     app_client = client.as_user(app_user)
 
