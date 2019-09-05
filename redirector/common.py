@@ -79,6 +79,14 @@ def is_box_file_public(file):
 def get_ddb_table():
     return boto3.resource("dynamodb").Table(MANIFEST_TABLE_NAME)
 
+def get_file_pathname(file):
+    # want to start the path after "All Files/<BoxFolderName>/"
+    file_path_collection = file.path_collection
+    file_path_names = [fp.get().name for fp in file_path_collection['entries'][2:]]
+    file_path = '/'.join(file_path_names)
+    fullpath = '/'.join([file_path, file.name])
+
+    return fullpath
 
 def put_file_item(ddb_table, file):
     assert is_box_file_public(
@@ -86,7 +94,7 @@ def put_file_item(ddb_table, file):
     ), "cannot put a file that hasn't been shared publicly"
 
     item = {
-        "filename": file.name,
+        "filename": get_file_pathname(file),
         "box_file_id": file.id,
         "download_url": file.shared_link["download_url"],
     }
@@ -95,7 +103,7 @@ def put_file_item(ddb_table, file):
 
 
 def delete_file_item(ddb_table, file):
-    ddb_table.delete_item(Key={"filename": file.name})
+    ddb_table.delete_item(Key={"filename": get_file_pathname(file)})
 
 
 def get_download_url(ddb_table, filename):
