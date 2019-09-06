@@ -94,7 +94,7 @@ Resources:
         RedirectorEvent:
           Type: Api
           Properties:
-            Path: /redirect/{filename+}
+            Path: /redirect/{filepath+}
             Method: get
       Policies:
         - DynamoDBCrudPolicy:
