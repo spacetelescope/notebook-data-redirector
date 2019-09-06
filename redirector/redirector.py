@@ -1,5 +1,5 @@
 import logging
-
+import urllib.parse
 import common
 
 
@@ -8,12 +8,12 @@ LOGGER.setLevel(logging.INFO)
 
 
 def lambda_handler(event, context):
-    filename = event["pathParameters"]["filename"]
+    filepath = urllib.parse.unquote(event["pathParameters"]["filepath"])
 
-    LOGGER.info("Received request for %s", filename)
+    LOGGER.info("Received request for %s", filepath)
 
     ddb_table = common.get_ddb_table()
-    download_url = common.get_download_url(ddb_table, filename)
+    download_url = common.get_download_url(ddb_table, filepath)
 
     if download_url is None:
         LOGGER.info("Not found, returning 404")

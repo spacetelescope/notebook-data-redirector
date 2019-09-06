@@ -80,7 +80,7 @@ else:
         rsa_path = Path(input("Path to RSA private key data: "))
         try:
             with rsa_path.open() as file:
-                secret["box_rsa_private_key_data"] = file.read()
+                secret["box_rsa_private_key_data"] = file.read().replace('\\n','\n')
             break
         except Exception:
             print("Unable to read private key, please try again")

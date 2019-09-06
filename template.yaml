@@ -30,7 +30,7 @@ Resources:
     Type: AWS::Serverless::SimpleTable
     Properties:
       PrimaryKey:
-        Name: filename
+        Name: filepath
         Type: String
 
   BoxWebhookFunction:
@@ -94,7 +94,7 @@ Resources:
         RedirectorEvent:
           Type: Api
           Properties:
-            Path: /redirect/{filename+}
+            Path: /redirect/{filepath+}
             Method: get
       Policies:
         - DynamoDBCrudPolicy:

@@ -57,7 +57,7 @@ def get_box_client():
         LOGGER.warning(
             "no app user exists, so the service account will be used as the box api client"
         )
-        return client, webhook_key
+        return client, webhook_signature_key
 
     app_client = client.as_user(app_user)
 
@@ -80,13 +80,25 @@ def get_ddb_table():
     return boto3.resource("dynamodb").Table(MANIFEST_TABLE_NAME)
 
 
+def get_file_pathname(file):
+    # want to start the path after "All Files/<BoxFolderName>/"
+    file_path_collection = file.path_collection
+    start_index = [e.id for e in file_path_collection["entries"]].index(
+        BOX_FOLDER_ID
+    ) + 1
+    file_path_names = [
+        fp.get().name for fp in file_path_collection["entries"][start_index:]
+    ] + [file.name]
+    return "/".join(file_path_names)
+
+
 def put_file_item(ddb_table, file):
     assert is_box_file_public(
         file
     ), "cannot put a file that hasn't been shared publicly"
 
     item = {
-        "filename": file.name,
+        "filepath": get_file_pathname(file),
         "box_file_id": file.id,
         "download_url": file.shared_link["download_url"],
     }
@@ -95,11 +107,11 @@ def put_file_item(ddb_table, file):
 
 
 def delete_file_item(ddb_table, file):
-    ddb_table.delete_item(Key={"filename": file.name})
+    ddb_table.delete_item(Key={"filepath": get_file_pathname(file)})
 
 
-def get_download_url(ddb_table, filename):
-    result = ddb_table.get_item(Key={"filename": filename})
+def get_download_url(ddb_table, filepath):
+    result = ddb_table.get_item(Key={"filepath": filepath})
     if result.get("Item"):
         return result["Item"]["download_url"]
     else:
