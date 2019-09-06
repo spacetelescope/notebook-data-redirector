@@ -1,5 +1,5 @@
 import logging
-
+import urllib.parse
 import common
 
 
@@ -8,7 +8,7 @@ LOGGER.setLevel(logging.INFO)
 
 
 def lambda_handler(event, context):
-    filepath = event["pathParameters"]["filepath"]
+    filepath = urllib.parse.unquote(event["pathParameters"]["filepath"])
 
     LOGGER.info("Received request for %s", filepath)
 
