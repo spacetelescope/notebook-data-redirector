@@ -7,30 +7,27 @@ from pathlib import Path
 import os
 
 def parse_args():
-    parser = argparse.ArgumentParser("deploy.py", description="redirector deploy script")
-    parser.add_argument("--config", help="path to config file", required=True)
+    parser = argparse.ArgumentParser("install_webhook.py", description="install a webhook on a Box folder that points to a notebook-data-redirector stack")
+    parser.add_argument("--stack-name", help="name of Cloud Formation stack", required=True)
+    parser.add_argument("--secret-arn", help="RN of Secrets Manager secret containing Box credentials", required=True)
+    parser.add_argument("--box-folder-id", help="ID of the shared Box folder", required=True)
     parser.add_argument("--force", help="overwrite any existing webhooks", action="store_true")
     return parser.parse_args()
 
-def read_config(path):
-    with path.open("r") as file:
-        return json.loads(file.read())
-
 args = parse_args()
-config = read_config(Path(args.config))
 
 cf = boto3.client("cloudformation")
-stack = cf.describe_stacks(StackName=config["stack_name"])["Stacks"][0]
+stack = cf.describe_stacks(StackName=args.stack_name)["Stacks"][0]
 webhook_url = next(o["OutputValue"] for o in stack["Outputs"] if o["OutputKey"] == "BoxWebhookURL")
 
-os.environ["SECRET_ARN"] = config["secret_arn"]
+os.environ["SECRET_ARN"] = args.secret_arn
 os.environ["MANIFEST_TABLE_NAME"] = "dummy"
-os.environ["BOX_FOLDER_ID"] = config["box_folder_id"]
+os.environ["BOX_FOLDER_ID"] = args.box_folder_id
 
 from redirector import common
 
 client, _ = common.get_box_client()
-folder = client.folder(config["box_folder_id"])
+folder = client.folder(args.box_folder_id)
 webhook = next((w for w in client.get_webhooks() if w.target.id == folder.object_id), None)
 
 if webhook is not None:
