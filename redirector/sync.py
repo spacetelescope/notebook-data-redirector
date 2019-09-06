@@ -14,13 +14,13 @@ def lambda_handler(event, context):
 
     LOGGER.info("Checking files in Box")
     shared_file_ids = set()
-    shared_file_paths = set()
+    shared_filepaths = set()
     count = 0
     for file in common.iterate_files(root_folder):
         count += 1
         if common.is_box_file_public(file):
             shared_file_ids.add(file.id)
-            shared_file_paths.add(common.get_file_pathname(file))
+            shared_filepaths.add(common.get_filepath(file))
             common.put_file_item(ddb_table, file)
         else:
             common.delete_file_item(ddb_table, file)
@@ -33,7 +33,7 @@ def lambda_handler(event, context):
     while True:
         for item in scan_response["Items"]:
             count += 1
-            if (item["box_file_id"] not in shared_file_ids) | (item['filepath'] not in shared_file_paths):
+            if (item["box_file_id"] not in shared_file_ids) or (item['filepath'] not in shared_filepaths):
                 delete_keys.add(item["filepath"])
 
         # If the data returned by a scan would exceed 1MB, DynamoDB will begin paging.
