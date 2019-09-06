@@ -9,33 +9,33 @@ OUTPUT_TEMPLATE = "packaged.yaml"
 
 def parse_args():
     parser = argparse.ArgumentParser("deploy.py", description="redirector deploy script")
-    parser.add_argument("--config", help="path to config file", required=True)
+    parser.add_argument("--stack-name", help="name of Cloud Formation stack to deploy")
+    parser.add_argument("--secret-arn", help="ARN of Secrets Manager secret containing Box credentials (generate with create_secret.py)", required=True)
+    parser.add_argument("--deploy-bucket", help="name of an S3 bucket that will store deployment artifacts", required=True)
+    parser.add_argument("--box-folder-id", help="ID of the shared Box folder", required=True)
+
     return parser.parse_args()
 
-def read_config(path):
-    with path.open("r") as file:
-        return json.loads(file.read())
+args = parse_args()
 
-config = read_config(Path(parse_args().config))
-
-print(f"Building and deploying notebook-data-redirector to stack '{config['stack_name']}'")
+print(f"Building and deploying notebook-data-redirector to stack '{args.stack_name}'")
 
 print("Building...")
 subprocess.check_call(["sam", "build"])
 
 print("Packaging...")
-subprocess.check_call(["sam", "package", "--output-template", OUTPUT_TEMPLATE, "--s3-bucket", config["deploy_bucket"]])
+subprocess.check_call(["sam", "package", "--output-template", OUTPUT_TEMPLATE, "--s3-bucket", args.deploy_bucket])
 
 print("Deploying...")
 deploy_args = ["sam", "deploy", "--template-file", "packaged.yaml", "--capabilities", "CAPABILITY_IAM"]
-deploy_args.extend(["--stack-name", config["stack_name"]])
+deploy_args.extend(["--stack-name", args.stack_name])
 deploy_args.append("--parameter-overrides")
-deploy_args.append(f"SecretArn={config['secret_arn']}")
-deploy_args.append(f"BoxFolderId={config['box_folder_id']}")
+deploy_args.append(f"SecretArn={args.secret_arn}")
+deploy_args.append(f"BoxFolderId={args.box_folder_id}")
 subprocess.check_call(deploy_args)
 
 print("Deploy complete, outputs:")
 cf = boto3.client("cloudformation")
-stack = cf.describe_stacks(StackName=config["stack_name"])["Stacks"][0]
+stack = cf.describe_stacks(StackName=args.stack_name)["Stacks"][0]
 for output in stack["Outputs"]:
     print(f"{output['OutputKey']}: {output['OutputValue']}")

@@ -4,24 +4,27 @@ This is an AWS application that redirects requests to files publicly hosted on B
 
 ## Deployment
 
-For convenience, we've included scripts for deploying the application and creating the Box webhook. The first step is to run the `configure.py` script, which uploads your Box credentials to Secrets Manager and generates a .json file used by the other scripts.
+For convenience, we've included scripts for deploying the application and creating the Box webhook. The first step is to create an AWS Secrets Manager secret using the `create_secret.py` script.
 
 ```console
-$ ./configure.py --config config.json
+$ ./create_secret.py --secret-name your-secret-name --box-client-id xxx --box-client-secret xxx --box-enterprise-id xxx --box-jwt-key-id xxx --box-rsa-private-key-passphrase xxx --box-webhook-signature-key xxx --box-rsa-private-key-path /path/to/your/private-key
+Created Secrets Manager secret with ARN: arn:aws:secretsmanager:xxx
 ```
 
-The script will ask you a series of questions.  You'll need to have your Box credentials on hand.
+The script will confirm that the credentials work, create a Secrets Manager secret, then output the resulting ARN.
 
 Next, deploy the application as a CloudFormation stack with the `deploy.py` script:
 
 ```console
-$ ./deploy.py --config config.json
+$ ./deploy.py --stack-name your-stack-name --box-folder-id xxx --deploy-bucket your-deploy-bucket --secret-arn arn:aws:secretsmanager:xxx
+...
 ```
 
 Finally, create the Box webhook with `install_webhook.py`:
 
 ```console
-$ ./install_webhook.py --config config.json
+$ ./install_webhook.py --stack-name your-stack-name --secret-arn arn:aws:secretsmanager:xxx --box-folder-id xxx
+Webhook created
 ```
 
 At this point your redirector should be ready to go!
