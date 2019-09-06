@@ -7,7 +7,7 @@ from pathlib import Path
 import os
 
 def parse_args():
-    parser = argparse.ArgumentParser("deploy.py", description="redirector deploy script")
+    parser = argparse.ArgumentParser("install_webhook.py", description="install a webhook on a Box folder that points to a notebook-data-redirector stack")
     parser.add_argument("--stack-name", help="name of Cloud Formation stack", required=True)
     parser.add_argument("--secret-arn", help="RN of Secrets Manager secret containing Box credentials", required=True)
     parser.add_argument("--box-folder-id", help="ID of the shared Box folder", required=True)
