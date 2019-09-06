@@ -83,14 +83,14 @@ def get_ddb_table():
 def get_file_pathname(file):
     # want to start the path after "All Files/<BoxFolderName>/"
     file_path_collection = file.path_collection
-    file_path_names = [fp.get().name for fp in file_path_collection["entries"][2:]]
-    if len(file_path_names) > 0:
-        file_path = "/".join(file_path_names)
-        fullpath = "/".join([file_path, file.name])
-    else:
-        fullpath = file.name
-
-    return fullpath
+    start_index = [e.id for e in file_path_collection["entries"]].index(BOX_FOLDER_ID) + 1
+    file_path_names = [fp.get().name for fp in file_path_collection["entries"][start_index:]] + [file.name]
+    # note: lists with len < 1 are not handled. They shouldn't happen.
+    if len(file_path_names) > 1:
+        return "/".join(file_path_names)
+    elif len(file_path_names) == 1:
+        return file_path_names
+    
 
 
 def put_file_item(ddb_table, file):
@@ -99,7 +99,7 @@ def put_file_item(ddb_table, file):
     ), "cannot put a file that hasn't been shared publicly"
 
     item = {
-        "filename": get_file_pathname(file),
+        "filepath": get_file_pathname(file),
         "box_file_id": file.id,
         "download_url": file.shared_link["download_url"],
     }
@@ -108,11 +108,11 @@ def put_file_item(ddb_table, file):
 
 
 def delete_file_item(ddb_table, file):
-    ddb_table.delete_item(Key={"filename": get_file_pathname(file)})
+    ddb_table.delete_item(Key={"filepath": get_file_pathname(file)})
 
 
-def get_download_url(ddb_table, filename):
-    result = ddb_table.get_item(Key={"filename": filename})
+def get_download_url(ddb_table, filepath):
+    result = ddb_table.get_item(Key={"filepath": filepath})
     if result.get("Item"):
         return result["Item"]["download_url"]
     else:

@@ -32,7 +32,7 @@ def lambda_handler(event, context):
         for item in scan_response["Items"]:
             count += 1
             if item["box_file_id"] not in shared_file_ids:
-                delete_keys.add(item["filename"])
+                delete_keys.add(item["filepath"])
 
         # If the data returned by a scan would exceed 1MB, DynamoDB will begin paging.
         # The LastEvaluatedKey field is the placeholder used to request the next page.
@@ -44,5 +44,5 @@ def lambda_handler(event, context):
             break
 
     for key in delete_keys:
-        ddb_table.delete_item(Key={"filename": key})
+        ddb_table.delete_item(Key={"filepath": key})
     LOGGER.info("Processed %s items", count)
