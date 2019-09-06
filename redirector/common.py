@@ -83,14 +83,13 @@ def get_ddb_table():
 def get_file_pathname(file):
     # want to start the path after "All Files/<BoxFolderName>/"
     file_path_collection = file.path_collection
-    start_index = [e.id for e in file_path_collection["entries"]].index(BOX_FOLDER_ID) + 1
-    file_path_names = [fp.get().name for fp in file_path_collection["entries"][start_index:]] + [file.name]
-    # note: lists with len < 1 are not handled. They shouldn't happen.
-    if len(file_path_names) > 1:
-        return "/".join(file_path_names)
-    elif len(file_path_names) == 1:
-        return file_path_names
-    
+    start_index = [e.id for e in file_path_collection["entries"]].index(
+        BOX_FOLDER_ID
+    ) + 1
+    file_path_names = [
+        fp.get().name for fp in file_path_collection["entries"][start_index:]
+    ] + [file.name]
+    return "/".join(file_path_names)
 
 
 def put_file_item(ddb_table, file):
