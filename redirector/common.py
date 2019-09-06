@@ -87,10 +87,10 @@ def get_filepath(file):
     start_index = [e.id for e in filepath_collection["entries"]].index(
         BOX_FOLDER_ID
     ) + 1
-    filepath = [
+    filepath_tokens = [
         fp.get().name for fp in filepath_collection["entries"][start_index:]
     ] + [file.name]
-    return "/".join(filepath)
+    return "/".join(filepath_tokens)
 
 
 def put_file_item(ddb_table, file):
