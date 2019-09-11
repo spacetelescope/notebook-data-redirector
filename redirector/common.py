@@ -27,6 +27,13 @@ HANDLED_FOLDER_TRIGGERS = {"FOLDER.RESTORED", "FOLDER.TRASHED", "FOLDER.MOVED"}
 
 HANDLED_TRIGGERS = HANDLED_FILE_TRIGGERS | HANDLED_FOLDER_TRIGGERS
 
+GET_ITEMS_FIELDS = {
+    "name",
+    "path_collection",
+    "shared_link",
+}
+
+GET_ITEMS_LIMIT = 1000
 
 def get_box_client():
     secret = _get_secret()
@@ -88,7 +95,7 @@ def get_filepath(file):
         BOX_FOLDER_ID
     ) + 1
     filepath_tokens = [
-        fp.get().name for fp in filepath_collection["entries"][start_index:]
+        fp.name for fp in filepath_collection["entries"][start_index:]
     ] + [file.name]
     return "/".join(filepath_tokens)
 
@@ -138,14 +145,22 @@ def _get_box_resource(callback):
 
 
 def iterate_files(folder):
-    for item in folder.get_items():
-        if item.object_type == "folder":
-            # Here we're recursively calling iterate_files on a nested folder and
-            # receiving an iterator that contains all of its files.  "yield from"
-            # will yield each value from that iterator in turn.
-            yield from iterate_files(item)
-        elif item.object_type == "file":
-            yield item.get()
+    offset = 0
+    while True:
+        count = 0
+        for item in folder.get_items(limit=GET_ITEMS_LIMIT, offset=offset, fields=GET_ITEMS_FIELDS):
+            count += 1
+            if item.object_type == "folder":
+                # Here we're recursively calling iterate_files on a nested folder and
+                # receiving an iterator that contains all of its files.  "yield from"
+                # will yield each value from that iterator in turn.
+                yield from iterate_files(item)
+            elif item.object_type == "file":
+                yield item
+        if count >= GET_ITEMS_LIMIT:
+            offset += count
+        else:
+            break
 
 
 def _get_secret():
