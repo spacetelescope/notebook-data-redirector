@@ -27,13 +27,10 @@ HANDLED_FOLDER_TRIGGERS = {"FOLDER.RESTORED", "FOLDER.TRASHED", "FOLDER.MOVED"}
 
 HANDLED_TRIGGERS = HANDLED_FILE_TRIGGERS | HANDLED_FOLDER_TRIGGERS
 
-GET_ITEMS_FIELDS = {
-    "name",
-    "path_collection",
-    "shared_link",
-}
+GET_ITEMS_FIELDS = {"name", "path_collection", "shared_link"}
 
 GET_ITEMS_LIMIT = 1000
+
 
 def get_box_client():
     secret = _get_secret()
@@ -62,9 +59,7 @@ def get_box_client():
     try:
         app_user = users.next()
     except StopIteration:
-        LOGGER.warning(
-            "no app user exists, so the service account will be used as the box api client"
-        )
+        LOGGER.warning("no app user exists, so the service account will be used as the box api client")
         return client, webhook_signature_key
 
     app_client = client.as_user(app_user)
@@ -73,12 +68,10 @@ def get_box_client():
 
 
 def is_box_file_public(file):
-    assert hasattr(
-        file, "shared_link"
-    ), "cannot operate on summary file, call get() first"
+    assert hasattr(file, "shared_link"), "cannot operate on summary file, call get() first"
 
     return (
-        file.shared_link
+        file.shared_link is not None
         and file.shared_link["effective_access"] == "open"
         and file.shared_link["effective_permission"] == "can_download"
     )
@@ -91,25 +84,15 @@ def get_ddb_table():
 def get_filepath(file):
     # want to start the path after "All Files/<BoxFolderName>/"
     filepath_collection = file.path_collection
-    start_index = [e.id for e in filepath_collection["entries"]].index(
-        BOX_FOLDER_ID
-    ) + 1
-    filepath_tokens = [
-        fp.name for fp in filepath_collection["entries"][start_index:]
-    ] + [file.name]
+    start_index = [e.id for e in filepath_collection["entries"]].index(BOX_FOLDER_ID) + 1
+    filepath_tokens = [fp.name for fp in filepath_collection["entries"][start_index:]] + [file.name]
     return "/".join(filepath_tokens)
 
 
 def put_file_item(ddb_table, file):
-    assert is_box_file_public(
-        file
-    ), "cannot put a file that hasn't been shared publicly"
+    assert is_box_file_public(file), "cannot put a file that hasn't been shared publicly"
 
-    item = {
-        "filepath": get_filepath(file),
-        "box_file_id": file.id,
-        "download_url": file.shared_link["download_url"],
-    }
+    item = {"filepath": get_filepath(file), "box_file_id": file.id, "download_url": file.shared_link["download_url"]}
 
     ddb_table.put_item(Item=item)
 
