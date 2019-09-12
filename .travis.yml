@@ -7,6 +7,7 @@ matrix:
         - env: TOXENV=py37
         - env: TOXENV=black
         - env: TOXENV=flake8
+        - env: TOXENV=coverage
     allow_failures:
         - env: TOXENV=coverage
 install:
