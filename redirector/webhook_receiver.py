@@ -40,9 +40,7 @@ def lambda_handler(event, context):
     ddb = common.get_ddb_table()
 
     webhook = client.webhook(webhook_id)
-    is_valid = webhook.validate_message(
-        bytes(raw_body, "utf-8"), event["headers"], webhook_key
-    )
+    is_valid = webhook.validate_message(bytes(raw_body, "utf-8"), event["headers"], webhook_key)
     if not is_valid:
         LOGGER.critical("Received invalid webhook request")
         return STATUS_SUCCESS

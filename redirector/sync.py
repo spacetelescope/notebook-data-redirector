@@ -33,15 +33,13 @@ def lambda_handler(event, context):
     while True:
         for item in scan_response["Items"]:
             count += 1
-            if (item["box_file_id"] not in shared_file_ids) or (item['filepath'] not in shared_filepaths):
+            if (item["box_file_id"] not in shared_file_ids) or (item["filepath"] not in shared_filepaths):
                 delete_keys.add(item["filepath"])
 
         # If the data returned by a scan would exceed 1MB, DynamoDB will begin paging.
         # The LastEvaluatedKey field is the placeholder used to request the next page.
         if scan_response.get("LastEvaluatedKey"):
-            scan_response = ddb_table.scan(
-                ExclusiveStartKey=scan_response["LastEvaluatedKey"]
-            )
+            scan_response = ddb_table.scan(ExclusiveStartKey=scan_response["LastEvaluatedKey"])
         else:
             break
 

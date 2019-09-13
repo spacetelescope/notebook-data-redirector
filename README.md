@@ -7,7 +7,7 @@ This is an AWS application that redirects requests to files publicly hosted on B
 For convenience, we've included scripts for deploying the application and creating the Box webhook. The first step is to create an AWS Secrets Manager secret using the `create_secret.py` script.
 
 ```console
-$ ./create_secret.py --secret-name your-secret-name --box-client-id xxx --box-client-secret xxx --box-enterprise-id xxx --box-jwt-key-id xxx --box-rsa-private-key-passphrase xxx --box-webhook-signature-key xxx --box-rsa-private-key-path /path/to/your/private-key
+$ ./scripts/create_secret.py --secret-name your-secret-name --box-client-id xxx --box-client-secret xxx --box-enterprise-id xxx --box-jwt-key-id xxx --box-rsa-private-key-passphrase xxx --box-webhook-signature-key xxx --box-rsa-private-key-path /path/to/your/private-key
 Created Secrets Manager secret with ARN: arn:aws:secretsmanager:xxx
 ```
 
@@ -16,14 +16,14 @@ The script will confirm that the credentials work, create a Secrets Manager secr
 Next, deploy the application as a CloudFormation stack with the `deploy.py` script:
 
 ```console
-$ ./deploy.py --stack-name your-stack-name --box-folder-id xxx --deploy-bucket your-deploy-bucket --secret-arn arn:aws:secretsmanager:xxx
+$ ./scripts/deploy.py --stack-name your-stack-name --box-folder-id xxx --deploy-bucket your-deploy-bucket --secret-arn arn:aws:secretsmanager:xxx
 ...
 ```
 
 Finally, create the Box webhook with `install_webhook.py`:
 
 ```console
-$ ./install_webhook.py --stack-name your-stack-name --secret-arn arn:aws:secretsmanager:xxx --box-folder-id xxx
+$ ./scripts/install_webhook.py --stack-name your-stack-name --secret-arn arn:aws:secretsmanager:xxx --box-folder-id xxx
 Webhook created
 ```
 
@@ -56,3 +56,25 @@ this:
 ```
 
 Note that this will interact the Box API and whatever DynamoDB table you specify, so proceed with caution.
+
+## Running the unit tests
+
+You'll need to install the project's dev dependencies:
+
+```console
+$ pip install .[dev]
+```
+
+Then, simply run:
+
+```console
+$ pytest
+```
+
+The Travis build is configured to fail if the contents of the `redirector` or `tests` directory fail flake8
+or black checks, or if code coverage falls below a threshold.  You can confirm all of these by running
+tox:
+
+```console
+$ tox
+```
