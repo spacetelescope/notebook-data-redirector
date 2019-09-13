@@ -57,7 +57,7 @@ def get_box_client():
 
     users = client.users()
     try:
-        app_user = users.next()
+        app_user = next(users)
     except StopIteration:
         LOGGER.warning("no app user exists, so the service account will be used as the box api client")
         return client, webhook_signature_key
@@ -84,17 +84,19 @@ def get_ddb_table():
 def get_filepath(file):
     # want to start the path after "All Files/<BoxFolderName>/"
     filepath_collection = file.path_collection
-    start_index = [e.id for e in filepath_collection["entries"]].index(BOX_FOLDER_ID) + 1
-    filepath_tokens = [fp.name for fp in filepath_collection["entries"][start_index:]] + [file.name]
+    start_index = [e["id"] for e in filepath_collection["entries"]].index(BOX_FOLDER_ID) + 1
+    filepath_tokens = [fp["name"] for fp in filepath_collection["entries"][start_index:]] + [file.name]
     return "/".join(filepath_tokens)
+
+
+def make_ddb_item(file):
+    return {"filepath": get_filepath(file), "box_file_id": file.id, "download_url": file.shared_link["download_url"]}
 
 
 def put_file_item(ddb_table, file):
     assert is_box_file_public(file), "cannot put a file that hasn't been shared publicly"
 
-    item = {"filepath": get_filepath(file), "box_file_id": file.id, "download_url": file.shared_link["download_url"]}
-
-    ddb_table.put_item(Item=item)
+    ddb_table.put_item(Item=make_ddb_item(file))
 
 
 def delete_file_item(ddb_table, file):
@@ -147,8 +149,7 @@ def iterate_files(folder):
 
 
 def _get_secret():
-    session = boto3.session.Session()
-    client = session.client(service_name="secretsmanager")
+    client = boto3.client("secretsmanager")
     response = client.get_secret_value(SecretId=SECRET_ARN)
 
     if "SecretString" in response:
