@@ -78,6 +78,9 @@ def _next_box_object_id():
     return result
 
 
+# Here we're storing the id sequence variable as an attribute
+# of the function object itself.  Just a sneaky way to achieve
+# a stateful function.
 _next_box_object_id._next_id = 500000000000
 
 
