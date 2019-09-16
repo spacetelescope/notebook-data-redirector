@@ -5,7 +5,7 @@ from botocore.exceptions import ClientError
 import boxsdk
 
 from . import conftest
-from redirector import common
+import common
 
 
 def test_get_box_client(monkeypatch):

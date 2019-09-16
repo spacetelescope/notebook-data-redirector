@@ -49,7 +49,8 @@ def lambda_handler(event, context):
         file = common.get_file(client, box_id)
         if not file:
             LOGGER.warning("File %s is missing (trashed or deleted)", box_id)
-            common.delete_file_item(ddb, file)
+            # We don't know what the file's path was, so we'll just have to
+            # let the sync lambda clean up DynamoDB.
             return STATUS_SUCCESS
 
         if common.is_box_file_public(file):
@@ -60,9 +61,9 @@ def lambda_handler(event, context):
         folder = common.get_folder(client, box_id)
         if not folder:
             LOGGER.warning("Folder %s is missing (trashed or deleted)", box_id)
-            # NOTE(eslavich): The Box API doesn't appear to give us a way to
-            # list the contents of a trashed folder, so we're just going to have
-            # to let the sync lambda clean up the relevant DynamoDB rows.
+            # The Box API doesn't appear to give us a way to list the contents of
+            # a trashed folder, so we're just going to have to let the sync lambda
+            # clean up the relevant DynamoDB rows.
             return STATUS_SUCCESS
 
         for file in common.iterate_files(folder):

@@ -8,8 +8,6 @@ matrix:
         - env: TOXENV=black
         - env: TOXENV=flake8
         - env: TOXENV=coverage
-    allow_failures:
-        - env: TOXENV=coverage
 install:
     - pip install tox
 script: tox
