@@ -1,18 +1,18 @@
 import os
 import sys
-from pathlib import Path
-
-redirector_path = Path(__file__).resolve().parent.parent/"notebook_data_redirector"
-sys.path.append(str(redirector_path))
-
 import random
 import string
 import hashlib
 import hmac
 import base64
+from pathlib import Path
 
 import boxsdk
 import pytest
+
+
+redirector_path = Path(__file__).resolve().parent.parent / "notebook_data_redirector"
+sys.path.append(str(redirector_path))
 
 
 ROOT_FOLDER = boxsdk.folder.Folder(
