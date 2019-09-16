@@ -1,6 +1,6 @@
 import logging
 
-from . import common
+import common
 
 
 LOGGER = logging.getLogger(__name__)

@@ -1,6 +1,7 @@
 import pytest
 
-from redirector import common, sync
+import common
+import sync
 
 
 class TestSync:

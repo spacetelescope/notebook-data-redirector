@@ -1,7 +1,8 @@
 import urllib.parse
 import pytest
 
-from redirector import common, redirector
+import common
+import redirector
 
 
 class TestRedirector:

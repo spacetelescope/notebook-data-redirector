@@ -1,7 +1,7 @@
 import logging
 import urllib.parse
 
-from . import common
+import common
 
 
 LOGGER = logging.getLogger(__name__)

@@ -17,7 +17,7 @@ Globals:
   Function:
     Runtime: python3.7
     Handler: index.handler
-    CodeUri: redirector/
+    CodeUri: notebook_data_redirector/
     Environment:
       Variables:
         SECRET_ARN: !Ref SecretArn
