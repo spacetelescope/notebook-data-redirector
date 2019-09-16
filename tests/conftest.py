@@ -1,6 +1,9 @@
 import os
 import random
 import string
+import hashlib
+import hmac
+import base64
 
 import boxsdk
 import pytest
@@ -30,7 +33,7 @@ os.environ["MANIFEST_TABLE_NAME"] = MANIFEST_TABLE_NAME
 os.environ["AWS_DEFAULT_REGION"] = "gl-north-14"
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def shared_folder(create_folder):
     return create_folder(id=SHARED_BOX_FOLDER_ID)
 
@@ -48,6 +51,16 @@ def box_folders():
 @pytest.fixture
 def ddb_items():
     return []
+
+
+@pytest.fixture
+def box_webhook_signature_key():
+    return "".join(random.choices(string.ascii_letters + string.digits, k=32))
+
+
+@pytest.fixture
+def box_webhook_id():
+    return str(random.randint(1, 1000000))
 
 
 @pytest.fixture
@@ -144,7 +157,10 @@ def create_shared_file(create_file, create_shared_link, shared_folder):
 @pytest.fixture
 def mock_ddb_table(ddb_items):
     class MockTable:
+        BATCH_SIZE = 5
+
         def put_item(self, Item):
+            self.delete_item({"filepath": Item["filepath"]})
             ddb_items.append(Item)
 
         def delete_item(self, Key):
@@ -159,11 +175,44 @@ def mock_ddb_table(ddb_items):
                 result["Item"] = item
             return result
 
+        def scan(self, ExclusiveStartKey=None):
+            if ExclusiveStartKey:
+                start_index = (
+                    next(idx for idx, item in enumerate(ddb_items) if item["filepath"] == ExclusiveStartKey) + 1
+                )
+            else:
+                start_index = 0
+
+            response = {"Items": ddb_items[start_index : start_index + MockTable.BATCH_SIZE]}
+            if len(ddb_items) >= start_index + MockTable.BATCH_SIZE:
+                response["LastEvaluatedKey"] = response["Items"][-1]["filepath"]
+
+            return response
+
     return MockTable()
 
 
 @pytest.fixture
-def mock_box_client(box_folders, box_files):
+def compute_webhook_signature(box_webhook_signature_key):
+    def _compute_webhook_signature(body):
+        return base64.b64encode(
+            hmac.new(bytes(box_webhook_signature_key, "utf-8"), body, digestmod=hashlib.sha256).digest()
+        ).decode("utf-8")
+
+    return _compute_webhook_signature
+
+
+@pytest.fixture
+def mock_box_webhook(compute_webhook_signature):
+    class MockBoxWebhook:
+        def validate_message(self, body, headers, primary_signature_key, secondary_signature_key=None):
+            return compute_webhook_signature(body) == headers["box-signature-primary"]
+
+    return MockBoxWebhook()
+
+
+@pytest.fixture
+def mock_box_client(box_folders, box_files, mock_box_webhook, box_webhook_id):
     class MockBoxClient:
         def file(self, file_id):
             try:
@@ -175,6 +224,12 @@ def mock_box_client(box_folders, box_files):
             try:
                 return next(f for f in box_folders if f.object_id == folder_id)
             except StopIteration:
+                raise boxsdk.exception.BoxAPIException(404)
+
+        def webhook(self, webhook_id):
+            if webhook_id == box_webhook_id:
+                return mock_box_webhook
+            else:
                 raise boxsdk.exception.BoxAPIException(404)
 
     return MockBoxClient()
