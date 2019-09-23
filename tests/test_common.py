@@ -155,7 +155,7 @@ def test_put_file_item(create_file, create_shared_file, mock_ddb_table, ddb_item
     assert ddb_items[0]["box_file_id"] == shared_file.id
 
     private_file = create_file(parent_folder=shared_folder)
-    with pytest.raises(AssertionError):
+    with pytest.raises(ValueError):
         common.put_file_item(mock_ddb_table, private_file)
 
 

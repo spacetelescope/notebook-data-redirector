@@ -72,8 +72,8 @@ $ pytest
 ```
 
 The Travis build is configured to fail if the contents of the `redirector` or `tests` directory fail flake8
-or black checks, or if code coverage falls below a threshold.  You can confirm all of these by running
-tox:
+or black checks, or if code coverage falls below a threshold.  It also fails on errors from the bandit static
+analyzer.  You can confirm all of these by running tox:
 
 ```console
 $ tox

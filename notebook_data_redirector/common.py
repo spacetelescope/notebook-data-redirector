@@ -68,7 +68,8 @@ def get_box_client():
 
 
 def is_box_file_public(file):
-    assert hasattr(file, "shared_link"), "cannot operate on summary file, call get() first"
+    if not hasattr(file, "shared_link"):
+        raise ValueError("cannot operate on summary file, call get() first")
 
     return (
         file.shared_link is not None
@@ -94,7 +95,8 @@ def make_ddb_item(file):
 
 
 def put_file_item(ddb_table, file):
-    assert is_box_file_public(file), "cannot put a file that hasn't been shared publicly"
+    if not is_box_file_public(file):
+        raise ValueError("cannot put a file that hasn't been shared publicly")
 
     ddb_table.put_item(Item=make_ddb_item(file))
 
