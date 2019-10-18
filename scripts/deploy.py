@@ -27,7 +27,7 @@ print("Packaging...")
 subprocess.check_call(["sam", "package", "--output-template", OUTPUT_TEMPLATE, "--s3-bucket", args.deploy_bucket])
 
 print("Deploying...")
-deploy_args = ["sam", "deploy", "--template-file", "packaged.yaml", "--capabilities", "CAPABILITY_IAM"]
+deploy_args = ["sam", "deploy", "--template-file", "packaged.yaml", "--capabilities", "CAPABILITY_IAM", "--debug"]
 deploy_args.extend(["--stack-name", args.stack_name])
 deploy_args.append("--parameter-overrides")
 deploy_args.append(f"SecretArn={args.secret_arn}")
