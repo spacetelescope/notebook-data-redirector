@@ -45,7 +45,7 @@ def lambda_handler(event, context):
         LOGGER.critical("Received invalid webhook request")
         return STATUS_SUCCESS
 
-    if trigger in common.HANDLED_FILE_TRIGGERS:
+    if (trigger in common.HANDLED_FILE_TRIGGERS) and (box_type == "file"):
         file = common.get_file(client, box_id)
         if not file:
             LOGGER.warning("File %s is missing (trashed or deleted)", box_id)
@@ -57,7 +57,7 @@ def lambda_handler(event, context):
             common.put_file_item(ddb, file)
         else:
             common.delete_file_item(ddb, file)
-    elif trigger in common.HANDLED_FOLDER_TRIGGERS:
+    elif (trigger in common.HANDLED_FOLDER_TRIGGERS) and (box_type == "folder"):
         folder = common.get_folder(client, box_id)
         if not folder:
             LOGGER.warning("Folder %s is missing (trashed or deleted)", box_id)
