@@ -39,6 +39,9 @@ GET_ITEMS_FIELDS = {"name", "path_collection", "shared_link"}
 
 GET_ITEMS_LIMIT = 1000
 
+# public folders will be added to this object if found, to avoid excessive API calls
+PUBLIC_BOX_FOLDERS = []
+PRIVATE_BOX_FOLDERS = []
 
 def get_box_client():
     secret = _get_secret()
@@ -83,6 +86,25 @@ def is_box_file_public(file):
         and file.shared_link["effective_access"] == "open"
         and file.shared_link["effective_permission"] == "can_download"
     )
+
+def is_any_parent_public(client, file):
+    # checks if any parent folder of the file is public
+    # necessary due to changes in the Box API when a folder is shared
+    filepath_collection = file.path_collection
+    start_index = [e["id"] for e in filepath_collection["entries"]].index(BOX_FOLDER_ID)
+    for fpc in filepath_collection["entries"][start_index:]:
+        if fpc.id in PUBLIC_BOX_FOLDERS:
+            return True
+        elif fpc.id in PRIVATE_BOX_FOLDERS:
+            continue
+        else:
+            folder = get_folder(client, fpc.id).get()
+            if is_box_file_public(folder):
+                PUBLIC_BOX_FOLDERS.append(fpc.id)
+                return True
+            else:
+                PRIVATE_BOX_FOLDERS.append(fpc.id)
+    return False
 
 
 def get_ddb_table():
