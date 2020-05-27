@@ -53,6 +53,11 @@ def lambda_handler(event, context):
             # let the sync lambda clean up DynamoDB.
             return STATUS_SUCCESS
 
+        # if the file isn't public but any parent directory is
+        if (not common.is_box_file_public(file)) and (common.is_any_parent_public(client, file)):
+            # this includes an api call 
+            file = common.create_shared_link(client, file, access="open", allow_download=True)
+
         if common.is_box_file_public(file):
             common.put_file_item(ddb, file)
         else:
@@ -67,6 +72,10 @@ def lambda_handler(event, context):
             return STATUS_SUCCESS
 
         for file in common.iterate_files(folder):
+            # if the file isn't public but any parent directory is
+            if (not common.is_box_file_public(file)) and (common.is_any_parent_public(client, file)):
+                # this includes an api call 
+                file = common.create_shared_link(client, file, access=u"open", allow_download=True)
             if common.is_box_file_public(file):
                 common.put_file_item(ddb, file)
             else:

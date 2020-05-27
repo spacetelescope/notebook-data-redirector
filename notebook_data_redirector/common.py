@@ -106,6 +106,9 @@ def is_any_parent_public(client, file):
                 PRIVATE_BOX_FOLDERS.append(fpc.id)
     return False
 
+def create_shared_link(client, file, **boxargs):
+    return file.create_shared_link(**boxargs)
+
 
 def get_ddb_table():
     return boto3.resource("dynamodb").Table(MANIFEST_TABLE_NAME)

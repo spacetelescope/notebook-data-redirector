@@ -18,6 +18,9 @@ def lambda_handler(event, context):
     count = 0
     for file in common.iterate_files(root_folder):
         count += 1
+        if (not common.is_box_file_public(file)) and (common.is_any_parent_public(box_client, file)):
+            # this includes an api call 
+            file = common.create_shared_link(box_client, file, access=u"open", allow_download=True)
         if common.is_box_file_public(file):
             shared_file_ids.add(file.id)
             shared_filepaths.add(common.get_filepath(file))
