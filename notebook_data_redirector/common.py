@@ -93,17 +93,17 @@ def is_any_parent_public(client, file):
     filepath_collection = file.path_collection
     start_index = [e["id"] for e in filepath_collection["entries"]].index(BOX_FOLDER_ID)
     for fpc in filepath_collection["entries"][start_index:]:
-        if fpc.id in PUBLIC_BOX_FOLDERS:
+        if fpc["id"] in PUBLIC_BOX_FOLDERS:
             return True
-        elif fpc.id in PRIVATE_BOX_FOLDERS:
+        elif fpc["id"] in PRIVATE_BOX_FOLDERS:
             continue
         else:
-            folder = get_folder(client, fpc.id).get()
+            folder = get_folder(client, fpc["id"]).get()
             if is_box_file_public(folder):
-                PUBLIC_BOX_FOLDERS.append(fpc.id)
+                PUBLIC_BOX_FOLDERS.append(fpc["id"])
                 return True
             else:
-                PRIVATE_BOX_FOLDERS.append(fpc.id)
+                PRIVATE_BOX_FOLDERS.append(fpc["id"])
     return False
 
 def create_shared_link(client, file, **boxargs):
