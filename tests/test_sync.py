@@ -14,7 +14,16 @@ class TestSync:
         sync.lambda_handler({}, None)
         assert len(ddb_items) == 0
 
-    def test_sync(self, ddb_items, create_folder, create_file, create_shared_file, shared_folder):
+    def test_sync(
+        self,
+        ddb_items,
+        create_folder,
+        create_file,
+        create_shared_file,
+        create_shared_folder,
+        shared_folder,
+        create_shared_link,
+    ):
         correct_file = create_shared_file()
         ddb_items.append(common.make_ddb_item(correct_file))
 

@@ -116,6 +116,21 @@ def test_is_box_file_public(create_file, create_shared_link):
     shared_file = create_file(shared_link=create_shared_link())
     assert common.is_box_file_public(shared_file) is True
 
+def test_is_any_parent_public(create_file, create_folder, create_shared_folder, mock_box_client):
+    client = mock_box_client
+
+    unshared_folder = create_folder(id=conftest._next_box_object_id())
+    unshared_child_folder = create_folder(parent_folder=unshared_folder, id=f"{conftest._next_box_object_id()}")
+    shared_child_folder = create_shared_folder(parent_folder=unshared_folder, id=f"{conftest._next_box_object_id()}")
+
+    assert False
+    
+    unshared_file = create_file(parent_folder=unshared_child_folder)
+    assert common.is_any_parent_public(client, unshared_file) is False
+
+    shared_file = create_file(parent_folder=shared_child_folder)
+    assert common.is_any_parent_public(client, shared_file) is True
+
 
 def test_get_ddb_table():
     table = common.get_ddb_table()
@@ -218,15 +233,25 @@ def test_iterate_files(create_folder, create_file, shared_folder):
         for _ in range(5):
             files.add(create_file(parent_folder=folder))
 
-    results = list(common.iterate_files(shared_folder))
-    assert len(results) == len(files)
-    assert set(results) == files
+    results_files, results_shared = [], []
+    for item, shared in common.iterate_files(shared_folder):
+        results_files.append(item)
+        results_shared.append(shared)
+
+    assert len(results_files) == len(files)
+    assert set(results_files) == files
 
     # Test behavior when we are forced to page through a large number of files
     # in a single folder:
     for _ in range(common.GET_ITEMS_LIMIT * 2 + 1):
         files.add(create_file(parent_folder=shared_folder))
 
-    results = list(common.iterate_files(shared_folder))
-    assert len(results) == len(files)
-    assert set(results) == files
+    results_files, results_shared = [], []
+    for item, shared in common.iterate_files(shared_folder):
+        results_files.append(item)
+        results_shared.append(shared)
+
+    assert len(results_files) == len(files)
+    assert set(results_files) == files
+
+    # TODO: Test a mix of shared folders

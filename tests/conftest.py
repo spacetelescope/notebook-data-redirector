@@ -40,8 +40,13 @@ os.environ["AWS_DEFAULT_REGION"] = "gl-north-14"
 
 
 @pytest.fixture(autouse=True)
-def shared_folder(create_folder):
+def unshared_folder(create_folder):
     return create_folder(id=SHARED_BOX_FOLDER_ID)
+
+
+@pytest.fixture(autouse=True)
+def shared_folder(create_shared_folder):
+    return create_shared_folder(id=SHARED_BOX_FOLDER_ID)
 
 
 @pytest.fixture
@@ -70,7 +75,7 @@ def box_webhook_id():
 
 
 @pytest.fixture
-def create_file(box_files, monkeypatch):
+def create_file(box_files, create_shared_link, monkeypatch):
     def _create_file(parent_folder=ROOT_FOLDER, **kwargs):
         object_id = kwargs.pop("id", None)
         if object_id is None:
@@ -87,10 +92,21 @@ def create_file(box_files, monkeypatch):
         response_object.update(kwargs)
 
         if "name" not in response_object:
-            response_object["name"] = f"test-folder-{object_id}"
+            response_object["name"] = f"test-file-{object_id}"
 
         file = boxsdk.file.File(None, object_id, response_object)
         monkeypatch.setattr(file, "get", lambda: file)
+
+        def file_create_shared_link(**kwargs):
+            link_args = {
+                "effective_access": kwargs.pop("access", "open"),
+                "effective_permission": kwargs.pop("allow_download", False),
+            }
+            shared_link = create_shared_link(**link_args)
+            file.shared_link = shared_link
+            return file
+
+        monkeypatch.setattr(file, "create_shared_link", file_create_shared_link)
 
         box_files.append(file)
         return file
@@ -106,16 +122,17 @@ def create_folder(box_folders, box_files, monkeypatch):
             object_id = _next_box_object_id()
 
         response_object = {
-            "type": "file",
+            "type": "folder",
             "id": object_id,
             "sequence_id": "0",
             "etag": "0",
             "path_collection": _get_path_collection(parent_folder),
+            "shared_link": None,
         }
         response_object.update(kwargs)
 
         if "name" not in response_object:
-            response_object["name"] = f"test-file-{object_id}"
+            response_object["name"] = f"test-folder-{object_id}"
 
         folder = boxsdk.folder.Folder(None, object_id, response_object)
 
@@ -128,6 +145,7 @@ def create_folder(box_folders, box_files, monkeypatch):
             return folder_items[offset : offset + limit]
 
         monkeypatch.setattr(folder, "get_items", get_items)
+        monkeypatch.setattr(folder, "get", lambda: folder)
 
         box_folders.append(folder)
         return folder
@@ -158,6 +176,16 @@ def create_shared_file(create_file, create_shared_link, shared_folder):
         return create_file(parent_folder=parent_folder, **kwargs)
 
     return _create_shared_file
+
+
+@pytest.fixture
+def create_shared_folder(create_folder, create_shared_link):
+    def _create_shared_folder(parent_folder=ROOT_FOLDER, **kwargs):
+        if "shared_link" not in kwargs:
+            kwargs["shared_link"] = create_shared_link()
+        return create_folder(parent_folder=parent_folder, **kwargs)
+
+    return _create_shared_folder
 
 
 @pytest.fixture

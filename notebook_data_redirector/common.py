@@ -28,10 +28,10 @@ HANDLED_FOLDER_TRIGGERS = {
     "SHARED_LINK.CREATED",
     "SHARED_LINK.UPDATED",
     "SHARED_LINK.DELETED",
-    "FOLDER.RESTORED", 
-    "FOLDER.TRASHED", 
-    "FOLDER.MOVED"
-    }
+    "FOLDER.RESTORED",
+    "FOLDER.TRASHED",
+    "FOLDER.MOVED",
+}
 
 HANDLED_TRIGGERS = HANDLED_FILE_TRIGGERS | HANDLED_FOLDER_TRIGGERS
 
@@ -42,6 +42,7 @@ GET_ITEMS_LIMIT = 1000
 # public folders will be added to this object if found, to avoid excessive API calls
 PUBLIC_BOX_FOLDERS = []
 PRIVATE_BOX_FOLDERS = []
+
 
 def get_box_client():
     secret = _get_secret()
@@ -87,6 +88,7 @@ def is_box_file_public(file):
         and file.shared_link["effective_permission"] == "can_download"
     )
 
+
 def is_any_parent_public(client, file):
     # checks if any parent folder of the file is public
     # necessary due to changes in the Box API when a folder is shared
@@ -105,6 +107,7 @@ def is_any_parent_public(client, file):
             else:
                 PRIVATE_BOX_FOLDERS.append(fpc["id"])
     return False
+
 
 def create_shared_link(client, file, **boxargs):
     return file.create_shared_link(**boxargs)
@@ -162,7 +165,7 @@ def _get_box_resource(callback):
             raise e
 
 
-def iterate_files(folder):
+def iterate_files(folder, shared=False):
     offset = 0
     while True:
         count = 0
@@ -172,9 +175,9 @@ def iterate_files(folder):
                 # Here we're recursively calling iterate_files on a nested folder and
                 # receiving an iterator that contains all of its files.  "yield from"
                 # will yield each value from that iterator in turn.
-                yield from iterate_files(item)
+                yield from iterate_files(item, shared=shared or is_box_file_public(item.get()))
             elif item.object_type == "file":
-                yield item
+                yield item, shared or is_box_file_public(item)
         if count >= GET_ITEMS_LIMIT:
             offset += count
         else:
