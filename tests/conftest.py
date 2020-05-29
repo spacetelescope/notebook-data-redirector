@@ -40,13 +40,8 @@ os.environ["AWS_DEFAULT_REGION"] = "gl-north-14"
 
 
 @pytest.fixture(autouse=True)
-def unshared_folder(create_folder):
+def managed_folder(create_folder):
     return create_folder(id=SHARED_BOX_FOLDER_ID)
-
-
-@pytest.fixture(autouse=True)
-def shared_folder(create_shared_folder):
-    return create_shared_folder(id=SHARED_BOX_FOLDER_ID)
 
 
 @pytest.fixture
@@ -115,7 +110,7 @@ def create_file(box_files, create_shared_link, monkeypatch):
 
 
 @pytest.fixture
-def create_folder(box_folders, box_files, monkeypatch):
+def create_folder(box_folders, box_files, create_shared_link, monkeypatch):
     def _create_folder(parent_folder=ROOT_FOLDER, **kwargs):
         object_id = kwargs.pop("id", None)
         if object_id is None:
@@ -144,8 +139,14 @@ def create_folder(box_folders, box_files, monkeypatch):
             ]
             return folder_items[offset : offset + limit]
 
+        def folder_create_shared_link():
+            shared_link = create_shared_link()
+            folder.shared_link = shared_link
+            return folder
+
         monkeypatch.setattr(folder, "get_items", get_items)
         monkeypatch.setattr(folder, "get", lambda: folder)
+        monkeypatch.setattr(folder, "create_shared_link", folder_create_shared_link)
 
         box_folders.append(folder)
         return folder
@@ -169,8 +170,8 @@ def create_shared_link():
 
 
 @pytest.fixture
-def create_shared_file(create_file, create_shared_link, shared_folder):
-    def _create_shared_file(parent_folder=shared_folder, **kwargs):
+def create_shared_file(create_file, create_shared_link, managed_folder):
+    def _create_shared_file(parent_folder=managed_folder, **kwargs):
         if "shared_link" not in kwargs:
             kwargs["shared_link"] = create_shared_link()
         return create_file(parent_folder=parent_folder, **kwargs)

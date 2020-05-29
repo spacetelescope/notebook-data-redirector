@@ -21,7 +21,7 @@ class TestSync:
         create_file,
         create_shared_file,
         create_shared_folder,
-        shared_folder,
+        managed_folder,
         create_shared_link,
     ):
         correct_file = create_shared_file()
@@ -29,7 +29,7 @@ class TestSync:
 
         missing_file = create_shared_file()
 
-        no_longer_shared_file = create_file(parent_folder=shared_folder)
+        no_longer_shared_file = create_file(parent_folder=managed_folder)
         ddb_items.append(
             {
                 "filepath": common.get_filepath(no_longer_shared_file),
@@ -45,6 +45,10 @@ class TestSync:
                 "download_url": "some-other-bogus-download-url",
             }
         )
+
+        # file in a shared folder that's missing from ddb
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        unshared_file = create_file(parent_folder=shared_folder)
 
         sync.lambda_handler({}, None)
 

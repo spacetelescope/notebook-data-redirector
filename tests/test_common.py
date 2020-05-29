@@ -119,11 +119,9 @@ def test_is_box_file_public(create_file, create_shared_link):
 def test_is_any_parent_public(create_file, create_folder, create_shared_folder, mock_box_client):
     client = mock_box_client
 
-    unshared_folder = create_folder(id=conftest._next_box_object_id())
+    unshared_folder = create_folder(id=common.BOX_FOLDER_ID)
     unshared_child_folder = create_folder(parent_folder=unshared_folder, id=f"{conftest._next_box_object_id()}")
     shared_child_folder = create_shared_folder(parent_folder=unshared_folder, id=f"{conftest._next_box_object_id()}")
-
-    assert False
     
     unshared_file = create_file(parent_folder=unshared_child_folder)
     assert common.is_any_parent_public(client, unshared_file) is False
@@ -131,17 +129,31 @@ def test_is_any_parent_public(create_file, create_folder, create_shared_folder, 
     shared_file = create_file(parent_folder=shared_child_folder)
     assert common.is_any_parent_public(client, shared_file) is True
 
+    # making sure the caching in common is working
+    assert common.is_any_parent_public(client, unshared_file) is False
+    assert common.is_any_parent_public(client, shared_file) is True
+
+def test_create_shared_link(create_folder, create_shared_link, mock_box_client):
+    client = mock_box_client
+
+    folder = create_folder()
+    assert folder.shared_link is None
+
+    folder = common.create_shared_link(client, folder)
+    assert folder.shared_link["effective_access"] == u"open"
+    assert folder.shared_link["effective_permission"] == "can_download"
+
 
 def test_get_ddb_table():
     table = common.get_ddb_table()
     assert table.name == conftest.MANIFEST_TABLE_NAME
 
 
-def test_get_filepath(create_folder, create_shared_file, shared_folder):
+def test_get_filepath(create_folder, create_shared_file, managed_folder):
     shared_file = create_shared_file()
     assert common.get_filepath(shared_file) == shared_file.name
 
-    nested_folder_one = create_folder(parent_folder=shared_folder)
+    nested_folder_one = create_folder(parent_folder=managed_folder)
     nested_folder_two = create_folder(parent_folder=nested_folder_one)
     nested_file = create_shared_file(parent_folder=nested_folder_two)
     expected_path = f"{nested_folder_one.name}/{nested_folder_two.name}/{nested_file.name}"
@@ -152,8 +164,8 @@ def test_get_filepath(create_folder, create_shared_file, shared_folder):
         common.get_filepath(root_file)
 
 
-def test_make_ddb_item(create_folder, create_shared_file, shared_folder):
-    folder = create_folder(parent_folder=shared_folder)
+def test_make_ddb_item(create_folder, create_shared_file, managed_folder):
+    folder = create_folder(parent_folder=managed_folder)
     file = create_shared_file(parent_folder=folder)
 
     item = common.make_ddb_item(file)
@@ -162,14 +174,14 @@ def test_make_ddb_item(create_folder, create_shared_file, shared_folder):
     assert item["download_url"] == file.shared_link["download_url"]
 
 
-def test_put_file_item(create_file, create_shared_file, mock_ddb_table, ddb_items, shared_folder):
+def test_put_file_item(create_file, create_shared_file, mock_ddb_table, ddb_items, managed_folder):
     shared_file = create_shared_file()
     common.put_file_item(mock_ddb_table, shared_file)
 
     assert len(ddb_items) == 1
     assert ddb_items[0]["box_file_id"] == shared_file.id
 
-    private_file = create_file(parent_folder=shared_folder)
+    private_file = create_file(parent_folder=managed_folder)
     with pytest.raises(AssertionError):
         common.put_file_item(mock_ddb_table, private_file)
 
@@ -222,10 +234,13 @@ def test_get_folder(create_folder, mock_box_client, monkeypatch):
         common.get_folder(mock_box_client, "1234")
 
 
-def test_iterate_files(create_folder, create_file, shared_folder):
-    folders = [shared_folder]
-    folders.append(create_folder(parent_folder=shared_folder))
-    folders.append(create_folder(parent_folder=shared_folder))
+def test_iterate_files(create_folder, create_file, managed_folder):
+    # this test never hits the else: break in iterate files
+    # I assume that what this means is that folder.get_items works. 
+    # so indirectly, the fact that else: break isn't covered means that get_items works
+    folders = [managed_folder]
+    folders.append(create_folder(parent_folder=managed_folder))
+    folders.append(create_folder(parent_folder=managed_folder))
     folders.append(create_folder(parent_folder=folders[-1]))
 
     files = set()
@@ -234,7 +249,7 @@ def test_iterate_files(create_folder, create_file, shared_folder):
             files.add(create_file(parent_folder=folder))
 
     results_files, results_shared = [], []
-    for item, shared in common.iterate_files(shared_folder):
+    for item, shared in common.iterate_files(managed_folder):
         results_files.append(item)
         results_shared.append(shared)
 
@@ -244,10 +259,10 @@ def test_iterate_files(create_folder, create_file, shared_folder):
     # Test behavior when we are forced to page through a large number of files
     # in a single folder:
     for _ in range(common.GET_ITEMS_LIMIT * 2 + 1):
-        files.add(create_file(parent_folder=shared_folder))
+        files.add(create_file(parent_folder=managed_folder))
 
     results_files, results_shared = [], []
-    for item, shared in common.iterate_files(shared_folder):
+    for item, shared in common.iterate_files(managed_folder):
         results_files.append(item)
         results_shared.append(shared)
 

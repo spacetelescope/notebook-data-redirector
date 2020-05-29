@@ -110,6 +110,7 @@ def is_any_parent_public(client, file):
 
 
 def create_shared_link(client, file, **boxargs):
+    # technically this could be a file or a folder
     return file.create_shared_link(**boxargs)
 
 
@@ -181,6 +182,7 @@ def iterate_files(folder, shared=False):
         if count >= GET_ITEMS_LIMIT:
             offset += count
         else:
+            # this clause not covered by testing, but I think it's because folder.get_items works properly
             break
 
 

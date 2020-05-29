@@ -44,6 +44,7 @@ def lambda_handler(event, context):
         if scan_response.get("LastEvaluatedKey"):
             scan_response = ddb_table.scan(ExclusiveStartKey=scan_response["LastEvaluatedKey"])
         else:
+            # this clause isn't reached by testing atm
             break
 
     for key in delete_keys:

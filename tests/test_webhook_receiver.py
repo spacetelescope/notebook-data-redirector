@@ -74,8 +74,8 @@ class TestWebhookReceiver:
         handle_event(event)
         assert len(ddb_items) == 0
 
-    def test_shared_link_deleted(self, create_webhook_event, create_file, ddb_items, shared_folder):
-        file = create_file(parent_folder=shared_folder)
+    def test_shared_link_deleted(self, create_webhook_event, create_file, ddb_items, managed_folder):
+        file = create_file(parent_folder=managed_folder)
         ddb_items.append({"filepath": common.get_filepath(file)})
         event = create_webhook_event("SHARED_LINK.DELETED", file.id)
         handle_event(event)
@@ -104,8 +104,8 @@ class TestWebhookReceiver:
         assert len(ddb_items) == 2
         assert {i["filepath"] for i in ddb_items} == {"some/old/path.dat", file.name}
 
-    def test_folder_restored(self, create_folder, shared_folder, create_shared_file, create_webhook_event, ddb_items):
-        folder = create_folder(parent_folder=shared_folder)
+    def test_folder_restored(self, create_folder, managed_folder, create_shared_file, create_webhook_event, ddb_items):
+        folder = create_folder(parent_folder=managed_folder)
         file1 = create_shared_file(parent_folder=folder)
         file2 = create_shared_file(parent_folder=folder)
         event = create_webhook_event("FOLDER.RESTORED", folder.id)
@@ -114,9 +114,9 @@ class TestWebhookReceiver:
         assert {i["box_file_id"] for i in ddb_items} == {file1.id, file2.id}
 
     def test_folder_trashed(
-        self, create_folder, shared_folder, create_shared_file, create_webhook_event, ddb_items, box_folders
+        self, create_folder, managed_folder, create_shared_file, create_webhook_event, ddb_items, box_folders
     ):
-        folder = create_folder(parent_folder=shared_folder)
+        folder = create_folder(parent_folder=managed_folder)
         file1 = create_shared_file(parent_folder=folder)
         file2 = create_shared_file(parent_folder=folder)
         ddb_items.append(common.make_ddb_item(file1))
@@ -126,8 +126,8 @@ class TestWebhookReceiver:
         handle_event(event)
         assert len(ddb_items) == 2
 
-    def test_folder_moved(self, create_folder, shared_folder, create_shared_file, create_webhook_event, ddb_items):
-        folder = create_folder(parent_folder=shared_folder)
+    def test_folder_moved(self, create_folder, managed_folder, create_shared_file, create_webhook_event, ddb_items):
+        folder = create_folder(parent_folder=managed_folder)
         file1 = create_shared_file(parent_folder=folder)
         file2 = create_shared_file(parent_folder=folder)
         ddb_items.append(

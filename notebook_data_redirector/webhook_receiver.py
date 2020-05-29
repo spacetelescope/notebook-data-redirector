@@ -27,6 +27,7 @@ def lambda_handler(event, context):
         box_id = source["id"]
         box_type = source["type"]
     else:
+        # not covered by tests
         raise RuntimeError("Missing id field")
 
     LOGGER.info("Received trigger %s on %s id %s", trigger, box_type, box_id)

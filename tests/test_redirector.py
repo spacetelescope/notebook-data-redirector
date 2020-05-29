@@ -24,9 +24,9 @@ class TestRedirector:
 
     @pytest.mark.parametrize("filename", ["normal-file.dat", "file with spaces.dat"])
     def test_redirect_path(
-        self, create_redirector_event, create_folder, create_shared_file, shared_folder, ddb_items, filename
+        self, create_redirector_event, create_folder, create_shared_file, managed_folder, ddb_items, filename
     ):
-        subfolder = create_folder(parent_folder=shared_folder)
+        subfolder = create_folder(parent_folder=managed_folder)
         file = create_shared_file(parent_folder=subfolder, name=filename)
         ddb_items.append(common.make_ddb_item(file))
 
