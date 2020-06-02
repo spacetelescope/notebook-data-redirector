@@ -11,14 +11,15 @@ def lambda_handler(event, context):
     ddb_table = common.get_ddb_table()
     box_client, _ = common.get_box_client()
     root_folder = box_client.folder(common.BOX_FOLDER_ID)
+    root_shared = common.is_box_file_public(root_folder)
 
     LOGGER.info("Checking files in Box")
     shared_file_ids = set()
     shared_filepaths = set()
     count = 0
-    for file, shared in common.iterate_files(root_folder):
+    for file, shared in common.iterate_files(root_folder, shared=root_shared):
         count += 1
-        if (not common.is_box_file_public(file)) and (common.is_any_parent_public(box_client, file)):
+        if (not common.is_box_file_public(file)) and shared:
             # this includes an api call
             file = common.create_shared_link(box_client, file, access=u"open", allow_download=True)
         if common.is_box_file_public(file):

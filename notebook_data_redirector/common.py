@@ -95,23 +95,25 @@ def is_any_parent_public(client, file):
     filepath_collection = file.path_collection
     start_index = [e["id"] for e in filepath_collection["entries"]].index(BOX_FOLDER_ID)
     for fpc in filepath_collection["entries"][start_index:]:
-        if fpc["id"] in PUBLIC_BOX_FOLDERS:
+        folder = get_folder(client, fpc["id"]).get()
+        if is_box_file_public(folder):
             return True
-        elif fpc["id"] in PRIVATE_BOX_FOLDERS:
-            continue
-        else:
-            folder = get_folder(client, fpc["id"]).get()
-            if is_box_file_public(folder):
-                PUBLIC_BOX_FOLDERS.append(fpc["id"])
-                return True
-            else:
-                PRIVATE_BOX_FOLDERS.append(fpc["id"])
+
     return False
 
 
 def create_shared_link(client, file, **boxargs):
+    assert hasattr(file, "shared_link"), "cannot operate on summary file, call get() first"
     # technically this could be a file or a folder
+    # create_shared_link returns a new object with the shared link; the original object is not modified
+    # see boxsdk docstring
     return file.create_shared_link(**boxargs)
+
+
+def remove_shared_link(client, file):
+    assert hasattr(file, "shared_link"), "cannot operate on summary file, call get() first"
+    # unlike create_shared_link, remove_shared_link returns a boolean indicating whether the operation was successful
+    return file.remove_shared_link()
 
 
 def get_ddb_table():
@@ -178,7 +180,7 @@ def iterate_files(folder, shared=False):
                 # will yield each value from that iterator in turn.
                 yield from iterate_files(item, shared=shared or is_box_file_public(item.get()))
             elif item.object_type == "file":
-                yield item, shared or is_box_file_public(item)
+                yield item, shared
         if count >= GET_ITEMS_LIMIT:
             offset += count
         else:

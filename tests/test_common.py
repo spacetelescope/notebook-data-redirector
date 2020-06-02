@@ -116,13 +116,14 @@ def test_is_box_file_public(create_file, create_shared_link):
     shared_file = create_file(shared_link=create_shared_link())
     assert common.is_box_file_public(shared_file) is True
 
+
 def test_is_any_parent_public(create_file, create_folder, create_shared_folder, mock_box_client):
     client = mock_box_client
 
     unshared_folder = create_folder(id=common.BOX_FOLDER_ID)
     unshared_child_folder = create_folder(parent_folder=unshared_folder, id=f"{conftest._next_box_object_id()}")
     shared_child_folder = create_shared_folder(parent_folder=unshared_folder, id=f"{conftest._next_box_object_id()}")
-    
+
     unshared_file = create_file(parent_folder=unshared_child_folder)
     assert common.is_any_parent_public(client, unshared_file) is False
 
@@ -133,14 +134,22 @@ def test_is_any_parent_public(create_file, create_folder, create_shared_folder, 
     assert common.is_any_parent_public(client, unshared_file) is False
     assert common.is_any_parent_public(client, shared_file) is True
 
-def test_create_shared_link(create_folder, create_shared_link, mock_box_client):
+
+def test_create_shared_link(create_folder, create_file, create_shared_link, mock_box_client):
     client = mock_box_client
 
     folder = create_folder()
     assert folder.shared_link is None
 
     folder = common.create_shared_link(client, folder)
-    assert folder.shared_link["effective_access"] == u"open"
+    assert folder.shared_link["effective_access"] == "open"
+    assert folder.shared_link["effective_permission"] == "can_download"
+
+    file = create_file()
+    assert file.shared_link is None
+
+    file = common.create_shared_link(client, file)
+    assert folder.shared_link["effective_access"] == "open"
     assert folder.shared_link["effective_permission"] == "can_download"
 
 
@@ -236,7 +245,7 @@ def test_get_folder(create_folder, mock_box_client, monkeypatch):
 
 def test_iterate_files(create_folder, create_file, managed_folder):
     # this test never hits the else: break in iterate files
-    # I assume that what this means is that folder.get_items works. 
+    # I assume that what this means is that folder.get_items works.
     # so indirectly, the fact that else: break isn't covered means that get_items works
     folders = [managed_folder]
     folders.append(create_folder(parent_folder=managed_folder))
