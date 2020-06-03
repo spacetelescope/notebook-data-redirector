@@ -39,10 +39,6 @@ GET_ITEMS_FIELDS = {"name", "path_collection", "shared_link"}
 
 GET_ITEMS_LIMIT = 1000
 
-# public folders will be added to this object if found, to avoid excessive API calls
-PUBLIC_BOX_FOLDERS = []
-PRIVATE_BOX_FOLDERS = []
-
 
 def get_box_client():
     secret = _get_secret()
