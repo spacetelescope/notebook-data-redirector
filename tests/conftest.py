@@ -178,8 +178,6 @@ def create_shared_link():
         result.update(update)
         # this second update allows you to set effective_access or effective_permission directly
         result.update(kwargs)
-        print(update)
-        print(kwargs)
         return result
 
     return _create_shared_link
