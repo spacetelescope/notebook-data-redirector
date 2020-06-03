@@ -26,11 +26,12 @@ class TestSync:
         mock_box_client,
     ):
         # supposed to exist after sync
-        correct_file = create_shared_file()
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        correct_file = create_shared_file(parent_folder=shared_folder)
         ddb_items.append(common.make_ddb_item(correct_file))
 
         # supposed to exist after sync
-        missing_file = create_shared_file()
+        missing_file = create_shared_file(parent_folder=shared_folder)
 
         # not supposed to exist after sync
         no_longer_shared_file = create_file(parent_folder=managed_folder)
@@ -53,12 +54,14 @@ class TestSync:
 
         # file in a shared folder that's missing from ddb
         # supposed to exist after sync
-        shared_folder = create_shared_folder(parent_folder=managed_folder)
         unshared_file = create_file(parent_folder=shared_folder)
+
+        # shared file in an unshared folder, not supposed to exist after sync
+        unshared_folder = create_folder(parent=managed_folder)
+        shared_file = create_shared_file(parent=unshared_folder)
 
         sync.lambda_handler({}, None)
 
-        # 5 files, 3 should exist, 2 should not
         assert len(ddb_items) == 3
         file_ids = {i["box_file_id"] for i in ddb_items}
         assert file_ids == {correct_file.id, missing_file.id, unshared_file.id}
