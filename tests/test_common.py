@@ -152,6 +152,18 @@ def test_create_shared_link(create_folder, create_file, create_shared_link, mock
     assert folder.shared_link["effective_access"] == "open"
     assert folder.shared_link["effective_permission"] == "can_download"
 
+def test_remove_shared_link(create_shared_folder, create_shared_file, create_file, managed_folder, mock_box_client):
+    client = mock_box_client
+    shared_file = create_shared_file()
+    shared_file = common.remove_shared_link(client, shared_file)
+    assert common.is_box_file_public(shared_file) is False
+
+    shared_folder = create_shared_folder(parent_folder=managed_folder)
+    unshared_file = create_file(parent_folder=shared_folder)
+    assert common.is_any_parent_public(client, unshared_file) is True
+
+    unshared_folder = common.remove_shared_link(client, shared_folder)
+    assert common.is_any_parent_public(client, unshared_file) is False
 
 def test_get_ddb_table():
     table = common.get_ddb_table()

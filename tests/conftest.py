@@ -148,9 +148,14 @@ def create_folder(box_folders, box_files, create_shared_link, monkeypatch):
             folder.shared_link = shared_link
             return folder
 
+        def folder_remove_shared_link():
+            folder.shared_link = None
+            return True
+
         monkeypatch.setattr(folder, "get_items", get_items)
         monkeypatch.setattr(folder, "get", lambda: folder)
         monkeypatch.setattr(folder, "create_shared_link", folder_create_shared_link)
+        monkeypatch.setattr(folder, "remove_shared_link", folder_remove_shared_link)
         monkeypatch.setattr(folder, "get_url", lambda: folder.path_collection)
 
         box_folders.append(folder)
