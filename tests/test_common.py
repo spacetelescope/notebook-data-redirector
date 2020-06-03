@@ -165,6 +165,7 @@ def test_remove_shared_link(create_shared_folder, create_shared_file, create_fil
 
     unshared_folder = common.remove_shared_link(client, shared_folder)
     assert common.is_any_parent_public(client, unshared_file) is False
+    assert common.is_box_file_public(unshared_folder) is False
 
 
 def test_get_ddb_table():

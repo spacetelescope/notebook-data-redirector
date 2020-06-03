@@ -65,6 +65,7 @@ class TestSync:
         assert len(ddb_items) == 3
         file_ids = {i["box_file_id"] for i in ddb_items}
         assert file_ids == {correct_file.id, missing_file.id, unshared_file.id}
+        assert common.is_box_file_public(shared_file) is False
 
     def test_sync_ddb_paging(self, ddb_items):
         for i in range(5 * 2 + 1):
