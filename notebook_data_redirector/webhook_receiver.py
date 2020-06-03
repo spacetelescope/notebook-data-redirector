@@ -82,8 +82,9 @@ def lambda_handler(event, context):
             # if the file isn't public but any parent directory is
             if (not common.is_box_file_public(file)) and shared:
                 # don't share folders, it makes it harder to unshare things later
-                # this includes an api call
-                file = common.create_shared_link(client, file, access=u"open", allow_download=True)
+                if file.type == "file":
+                    # this includes an api call
+                    file = common.create_shared_link(client, file, access=u"open", allow_download=True)
             if (common.is_box_file_public(file)) and (not shared):
                 file = common.remove_shared_link(client, file)
 
