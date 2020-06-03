@@ -23,7 +23,7 @@ def lambda_handler(event, context):
             # this includes an api call
             file = common.create_shared_link(box_client, file, access=u"open", allow_download=True)
         if (common.is_box_file_public(file)) and (not shared):
-            response = common.remove_shared_link(box_client, file)
+            file = common.remove_shared_link(box_client, file)
 
         if common.is_box_file_public(file):
             shared_file_ids.add(file.id)

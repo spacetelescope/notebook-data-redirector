@@ -109,7 +109,10 @@ def create_shared_link(client, file, **boxargs):
 def remove_shared_link(client, file):
     assert hasattr(file, "shared_link"), "cannot operate on summary file, call get() first"
     # unlike create_shared_link, remove_shared_link returns a boolean indicating whether the operation was successful
-    return file.remove_shared_link()
+    # to avoid confusion, I'm going to get and return the new file without the shared link
+    response = file.remove_shared_link()
+    assert response is True
+    return file.get()
 
 
 def get_ddb_table():

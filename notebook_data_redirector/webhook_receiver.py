@@ -61,8 +61,7 @@ def lambda_handler(event, context):
             file = common.create_shared_link(client, file, access="open", allow_download=True)
         # if the file is public but no parent directory is, delete the shared link
         if (common.is_box_file_public(file)) and (not common.is_any_parent_public(client, file)):
-            response = common.remove_shared_link(client, file)
-            assert response
+            file = common.remove_shared_link(client, file)
 
         if common.is_box_file_public(file):
             common.put_file_item(ddb, file)
@@ -86,7 +85,7 @@ def lambda_handler(event, context):
                 # this includes an api call
                 file = common.create_shared_link(client, file, access=u"open", allow_download=True)
             if (common.is_box_file_public(file)) and (not shared):
-                response = common.remove_shared_link(client, file)
+                file = common.remove_shared_link(client, file)
 
             if common.is_box_file_public(file):
                 common.put_file_item(ddb, file)
