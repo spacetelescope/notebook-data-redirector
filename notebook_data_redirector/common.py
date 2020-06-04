@@ -100,7 +100,8 @@ def is_any_parent_public(client, file):
 
 
 def create_shared_link(client, file, **boxargs):
-    assert hasattr(file, "shared_link"), "cannot operate on summary file, call get() first"
+    if not hasattr(file, "shared_link"):
+        raise RuntimeError("cannot operate on summary file, call get() first")
     # technically this could be a file or a folder
     # create_shared_link returns a new object with the shared link; the original object is not modified
     # see boxsdk docstring
@@ -108,11 +109,13 @@ def create_shared_link(client, file, **boxargs):
 
 
 def remove_shared_link(client, file):
-    assert hasattr(file, "shared_link"), "cannot operate on summary file, call get() first"
+    if not hasattr(file, "shared_link"):
+        raise RuntimeError("cannot operate on summary file, call get() first")
     # unlike create_shared_link, remove_shared_link returns a boolean indicating whether the operation was successful
     # to avoid confusion, I'm going to get and return the new file without the shared link
     response = file.remove_shared_link()
-    assert response is True
+    if not response:
+        raise RuntimeError("boxsdk API call to remove_shared_link returned False")
     return file.get()
 
 
