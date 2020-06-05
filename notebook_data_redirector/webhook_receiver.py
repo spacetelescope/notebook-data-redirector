@@ -56,11 +56,12 @@ def lambda_handler(event, context):
             return STATUS_SUCCESS
 
         # if the file isn't public but any parent directory is, make a shared link
-        if (not common.is_box_object_public(file)) and (common.is_any_parent_public(client, file)):
+        parent_public = common.is_any_parent_public(client, file)
+        if (not common.is_box_object_public(file)) and parent_public:
             # this includes an api call
             file = common.create_shared_link(client, file, access="open", allow_download=True)
         # if the file is public but no parent directory is, delete the shared link
-        if (common.is_box_object_public(file)) and (not common.is_any_parent_public(client, file)):
+        if (common.is_box_object_public(file)) and (not parent_public):
             file = common.remove_shared_link(client, file)
 
         if common.is_box_object_public(file):
