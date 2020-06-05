@@ -14,6 +14,7 @@ SECRET_ARN = os.environ["SECRET_ARN"]
 MANIFEST_TABLE_NAME = os.environ["MANIFEST_TABLE_NAME"]
 BOX_FOLDER_ID = os.environ["BOX_FOLDER_ID"]
 
+
 HANDLED_FILE_TRIGGERS = {
     "SHARED_LINK.CREATED",
     "SHARED_LINK.UPDATED",
@@ -23,7 +24,14 @@ HANDLED_FILE_TRIGGERS = {
     "FILE.MOVED",
 }
 
-HANDLED_FOLDER_TRIGGERS = {"FOLDER.RESTORED", "FOLDER.TRASHED", "FOLDER.MOVED"}
+HANDLED_FOLDER_TRIGGERS = {
+    "SHARED_LINK.CREATED",
+    "SHARED_LINK.UPDATED",
+    "SHARED_LINK.DELETED",
+    "FOLDER.RESTORED",
+    "FOLDER.TRASHED",
+    "FOLDER.MOVED",
+}
 
 HANDLED_TRIGGERS = HANDLED_FILE_TRIGGERS | HANDLED_FOLDER_TRIGGERS
 
@@ -67,7 +75,7 @@ def get_box_client():
     return app_client, webhook_signature_key
 
 
-def is_box_file_public(file):
+def is_box_object_public(file):
     if not hasattr(file, "shared_link"):
         raise ValueError("cannot operate on summary file, call get() first")
 
@@ -76,6 +84,39 @@ def is_box_file_public(file):
         and file.shared_link["effective_access"] == "open"
         and file.shared_link["effective_permission"] == "can_download"
     )
+
+
+def is_any_parent_public(client, file):
+    # checks if any parent folder of the file is public
+    # necessary due to changes in the Box API when a folder is shared
+    filepath_collection = file.path_collection
+    start_index = [e["id"] for e in filepath_collection["entries"]].index(BOX_FOLDER_ID)
+    for fpc in filepath_collection["entries"][start_index:]:
+        folder = get_folder(client, fpc["id"]).get()
+        if is_box_object_public(folder):
+            return True
+
+    return False
+
+
+def create_shared_link(client, file, **boxargs):
+    if not hasattr(file, "shared_link"):
+        raise RuntimeError("cannot operate on summary file, call get() first")
+    # technically this could be a file or a folder
+    # create_shared_link returns a new object with the shared link; the original object is not modified
+    # see boxsdk docstring
+    return file.create_shared_link(**boxargs)
+
+
+def remove_shared_link(client, file):
+    if not hasattr(file, "shared_link"):
+        raise RuntimeError("cannot operate on summary file, call get() first")
+    # unlike create_shared_link, remove_shared_link returns a boolean indicating whether the operation was successful
+    # to avoid confusion, I'm going to get and return the new file without the shared link
+    response = file.remove_shared_link()
+    if not response:
+        raise RuntimeError("boxsdk API call to remove_shared_link returned False")
+    return file.get()
 
 
 def get_ddb_table():
@@ -95,7 +136,7 @@ def make_ddb_item(file):
 
 
 def put_file_item(ddb_table, file):
-    if not is_box_file_public(file):
+    if not is_box_object_public(file):
         raise ValueError("cannot put a file that hasn't been shared publicly")
 
     ddb_table.put_item(Item=make_ddb_item(file))
@@ -131,7 +172,7 @@ def _get_box_resource(callback):
             raise e
 
 
-def iterate_files(folder):
+def iterate_files(folder, shared=False):
     offset = 0
     while True:
         count = 0
@@ -141,12 +182,13 @@ def iterate_files(folder):
                 # Here we're recursively calling iterate_files on a nested folder and
                 # receiving an iterator that contains all of its files.  "yield from"
                 # will yield each value from that iterator in turn.
-                yield from iterate_files(item)
+                yield from iterate_files(item, shared=shared or is_box_object_public(item))
             elif item.object_type == "file":
-                yield item
+                yield item, shared
         if count >= GET_ITEMS_LIMIT:
             offset += count
         else:
+            # unclear why pytest reports this break is never tested...
             break
 
 
