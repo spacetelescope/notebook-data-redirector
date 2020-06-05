@@ -11,7 +11,7 @@ def lambda_handler(event, context):
     ddb_table = common.get_ddb_table()
     box_client, _ = common.get_box_client()
     root_folder = box_client.folder(common.BOX_FOLDER_ID)
-    root_shared = common.is_box_file_public(root_folder)
+    root_shared = common.is_box_object_public(root_folder)
 
     LOGGER.info("Checking files in Box")
     shared_file_ids = set()
@@ -19,14 +19,14 @@ def lambda_handler(event, context):
     count = 0
     for file, shared in common.iterate_files(root_folder, shared=root_shared):
         count += 1
-        if (not common.is_box_file_public(file)) and shared:
+        if (not common.is_box_object_public(file)) and shared:
             # this includes an api call
             if file.type == "file":
                 file = common.create_shared_link(box_client, file, access=u"open", allow_download=True)
-        if (common.is_box_file_public(file)) and (not shared):
+        if (common.is_box_object_public(file)) and (not shared):
             file = common.remove_shared_link(box_client, file)
 
-        if common.is_box_file_public(file):
+        if common.is_box_object_public(file):
             shared_file_ids.add(file.id)
             shared_filepaths.add(common.get_filepath(file))
             common.put_file_item(ddb_table, file)

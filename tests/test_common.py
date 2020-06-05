@@ -103,18 +103,18 @@ def test_get_box_client(monkeypatch):
         common.get_box_client()
 
 
-def test_is_box_file_public(create_file, create_shared_link):
+def test_is_box_object_public(create_file, create_shared_link):
     unshared_file = create_file()
-    assert common.is_box_file_public(unshared_file) is False
+    assert common.is_box_object_public(unshared_file) is False
 
     shared_incorrect_access_file = create_file(shared_link=create_shared_link(effective_access="company"))
-    assert common.is_box_file_public(shared_incorrect_access_file) is False
+    assert common.is_box_object_public(shared_incorrect_access_file) is False
 
     shared_incorrect_permission_file = create_file(shared_link=create_shared_link(effective_permission="can_preview"))
-    assert common.is_box_file_public(shared_incorrect_permission_file) is False
+    assert common.is_box_object_public(shared_incorrect_permission_file) is False
 
     shared_file = create_file(shared_link=create_shared_link())
-    assert common.is_box_file_public(shared_file) is True
+    assert common.is_box_object_public(shared_file) is True
 
 
 def test_is_any_parent_public(create_file, create_folder, create_shared_folder, mock_box_client):
@@ -157,7 +157,7 @@ def test_remove_shared_link(create_shared_folder, create_shared_file, create_fil
     client = mock_box_client
     shared_file = create_shared_file()
     shared_file = common.remove_shared_link(client, shared_file)
-    assert common.is_box_file_public(shared_file) is False
+    assert common.is_box_object_public(shared_file) is False
 
     shared_folder = create_shared_folder(parent_folder=managed_folder)
     unshared_file = create_file(parent_folder=shared_folder)
@@ -165,7 +165,7 @@ def test_remove_shared_link(create_shared_folder, create_shared_file, create_fil
 
     unshared_folder = common.remove_shared_link(client, shared_folder)
     assert common.is_any_parent_public(client, unshared_file) is False
-    assert common.is_box_file_public(unshared_folder) is False
+    assert common.is_box_object_public(unshared_folder) is False
 
 
 def test_get_ddb_table():

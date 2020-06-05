@@ -56,14 +56,14 @@ def lambda_handler(event, context):
             return STATUS_SUCCESS
 
         # if the file isn't public but any parent directory is, make a shared link
-        if (not common.is_box_file_public(file)) and (common.is_any_parent_public(client, file)):
+        if (not common.is_box_object_public(file)) and (common.is_any_parent_public(client, file)):
             # this includes an api call
             file = common.create_shared_link(client, file, access="open", allow_download=True)
         # if the file is public but no parent directory is, delete the shared link
-        if (common.is_box_file_public(file)) and (not common.is_any_parent_public(client, file)):
+        if (common.is_box_object_public(file)) and (not common.is_any_parent_public(client, file)):
             file = common.remove_shared_link(client, file)
 
-        if common.is_box_file_public(file):
+        if common.is_box_object_public(file):
             common.put_file_item(ddb, file)
         else:
             common.delete_file_item(ddb, file)
@@ -76,19 +76,19 @@ def lambda_handler(event, context):
             # clean up the relevant DynamoDB rows.
             return STATUS_SUCCESS
 
-        folder_shared = common.is_box_file_public(folder)
+        folder_shared = common.is_box_object_public(folder)
         for file, shared in common.iterate_files(folder, shared=folder_shared):
 
             # if the file isn't public but any parent directory is
-            if (not common.is_box_file_public(file)) and shared:
+            if (not common.is_box_object_public(file)) and shared:
                 # don't share folders, it makes it harder to unshare things later
                 if file.type == "file":
                     # this includes an api call
                     file = common.create_shared_link(client, file, access=u"open", allow_download=True)
-            if (common.is_box_file_public(file)) and (not shared):
+            if (common.is_box_object_public(file)) and (not shared):
                 file = common.remove_shared_link(client, file)
 
-            if common.is_box_file_public(file):
+            if common.is_box_object_public(file):
                 common.put_file_item(ddb, file)
             else:
                 common.delete_file_item(ddb, file)

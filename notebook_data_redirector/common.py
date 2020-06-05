@@ -75,7 +75,7 @@ def get_box_client():
     return app_client, webhook_signature_key
 
 
-def is_box_file_public(file):
+def is_box_object_public(file):
     if not hasattr(file, "shared_link"):
         raise ValueError("cannot operate on summary file, call get() first")
 
@@ -93,7 +93,7 @@ def is_any_parent_public(client, file):
     start_index = [e["id"] for e in filepath_collection["entries"]].index(BOX_FOLDER_ID)
     for fpc in filepath_collection["entries"][start_index:]:
         folder = get_folder(client, fpc["id"]).get()
-        if is_box_file_public(folder):
+        if is_box_object_public(folder):
             return True
 
     return False
@@ -136,7 +136,7 @@ def make_ddb_item(file):
 
 
 def put_file_item(ddb_table, file):
-    if not is_box_file_public(file):
+    if not is_box_object_public(file):
         raise ValueError("cannot put a file that hasn't been shared publicly")
 
     ddb_table.put_item(Item=make_ddb_item(file))
@@ -182,7 +182,7 @@ def iterate_files(folder, shared=False):
                 # Here we're recursively calling iterate_files on a nested folder and
                 # receiving an iterator that contains all of its files.  "yield from"
                 # will yield each value from that iterator in turn.
-                yield from iterate_files(item, shared=shared or is_box_file_public(item.get()))
+                yield from iterate_files(item, shared=shared or is_box_object_public(item.get()))
             elif item.object_type == "file":
                 yield item, shared
         if count >= GET_ITEMS_LIMIT:
