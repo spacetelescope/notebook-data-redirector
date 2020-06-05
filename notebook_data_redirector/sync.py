@@ -10,7 +10,7 @@ LOGGER.setLevel(logging.INFO)
 def lambda_handler(event, context):
     ddb_table = common.get_ddb_table()
     box_client, _ = common.get_box_client()
-    root_folder = box_client.folder(common.BOX_FOLDER_ID)
+    root_folder = box_client.folder(common.BOX_FOLDER_ID).get()
     root_shared = common.is_box_object_public(root_folder)
 
     LOGGER.info("Checking files in Box")
