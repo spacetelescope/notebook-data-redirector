@@ -2,6 +2,55 @@
 
 This is an AWS application that redirects requests to files publicly hosted on Box.
 
+## Setup
+
+To ensure installation of required dependencies needed for deployment, this
+package should be installed locally with:
+
+```
+pip install .
+```
+
+This will ensure that you have the needed boxsdk and AWS dependencies to
+perform the deployment or run tests,  not run the redirector operationally.
+
+
+## Assume IAM Deployment Role
+
+To provide the necessary IAM permissions needed to deploy the redirector, AWS
+has been configured with an appropriate admin group, roles, and policies.
+First obtain membership for your user in the redirector admin group.
+
+### Edit your AWS config
+
+```
+[default]
+region = us-east-1
+output = json
+
+[profile notebook-data-redirector-DeployRole]
+region = us-east-1
+output = json
+```
+
+### Edit your AWS credentials
+
+```
+[default]
+aws_access_key_id = xxx
+aws_secret_access_key = yyy
+
+[notebook-data-redirector-DeployRole]
+source_profile = default
+role_arn = arn:aws:iam::162808325377:role/notebook-data-redirector-DeployRole
+```
+
+### Set env var AWS_PROFILE
+
+```
+$ export AWS_PROFILE=notebook-data-redirector-DeployRole
+```
+
 ## Deployment
 
 For convenience, we've included scripts for deploying the application and creating the Box webhook. The first step is to create an AWS Secrets Manager secret using the `create_secret.py` script.
