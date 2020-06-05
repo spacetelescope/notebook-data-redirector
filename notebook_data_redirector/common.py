@@ -188,7 +188,7 @@ def iterate_files(folder, shared=False):
         if count >= GET_ITEMS_LIMIT:
             offset += count
         else:
-            # this clause not covered by testing, but I think it's because folder.get_items works properly
+            # unclear why pytest reports this break is never tested...
             break
 
 
