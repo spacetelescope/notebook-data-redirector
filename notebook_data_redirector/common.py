@@ -159,7 +159,7 @@ def get_file(client, box_file_id):
 
 
 def get_folder(client, box_folder_id):
-    return _get_box_resource(lambda: client.folder(box_folder_id))
+    return _get_box_resource(lambda: client.folder(box_folder_id).get())
 
 
 def _get_box_resource(callback):
