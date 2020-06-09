@@ -12,6 +12,9 @@ Parameters:
   BoxFolderId:
     Type: String
     Description: ID of the root Box folder
+  LambdaRoleARN:
+    Type: String
+    Description: ARN of the role to use for the lambda functions
 
 Globals:
   Function:
@@ -40,6 +43,7 @@ Resources:
       # Box retries after 30 seconds, so we should give up at that point, too:
       Timeout: 30
       Handler: webhook_receiver.lambda_handler
+      Role: !Ref LambdaRoleARN
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
@@ -49,11 +53,7 @@ Resources:
           Properties:
             Path: /webhook_event
             Method: post
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref ManifestTable
-        - AWSSecretsManagerGetSecretValuePolicy:
-            SecretArn: !Ref SecretArn
+
 
   SyncFunction:
     Type: AWS::Serverless::Function
@@ -63,6 +63,7 @@ Resources:
       Timeout: 900
       ReservedConcurrentExecutions: 1
       Handler: sync.lambda_handler
+      Role: !Ref LambdaRoleARN
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
@@ -72,11 +73,6 @@ Resources:
           Properties:
             # Run every 15 minutes
             Schedule: cron(*/15 * * * ? *)
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref ManifestTable
-        - AWSSecretsManagerGetSecretValuePolicy:
-            SecretArn: !Ref SecretArn
 
   RedirectorFunction:
     Type: AWS::Serverless::Function
@@ -87,6 +83,7 @@ Resources:
       # a long cold start.
       Timeout: 15
       Handler: redirector.lambda_handler
+      Role: !Ref LambdaRoleARN
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
@@ -96,9 +93,7 @@ Resources:
           Properties:
             Path: /redirect/{filepath+}
             Method: get
-      Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref ManifestTable
+
         # This function should not be contacting Box, so it doesn't need access to the secret.
 
 Outputs:

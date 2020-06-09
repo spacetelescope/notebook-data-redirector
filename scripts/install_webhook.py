@@ -24,7 +24,7 @@ os.environ["SECRET_ARN"] = args.secret_arn
 os.environ["MANIFEST_TABLE_NAME"] = "dummy"
 os.environ["BOX_FOLDER_ID"] = args.box_folder_id
 
-from redirector import common
+from notebook_data_redirector import common
 
 client, _ = common.get_box_client()
 folder = client.folder(args.box_folder_id)
