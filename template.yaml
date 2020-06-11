@@ -15,6 +15,9 @@ Parameters:
   LambdaRoleARN:
     Type: String
     Description: ARN of the role to use for the lambda functions
+  SecretRoleARN:
+    Type: String
+    Description: ARN of the role to assume to retrieve the secret
 
 Globals:
   Function:
@@ -25,6 +28,7 @@ Globals:
       Variables:
         SECRET_ARN: !Ref SecretArn
         BOX_FOLDER_ID: !Ref BoxFolderId
+        SECRET_ROLE_ARN: !Ref SecretRoleARN
   Api:
     EndpointConfiguration: REGIONAL
 
