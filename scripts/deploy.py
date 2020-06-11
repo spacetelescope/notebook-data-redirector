@@ -14,6 +14,7 @@ def parse_args():
     parser.add_argument("--deploy-bucket", help="name of an S3 bucket that will store deployment artifacts", required=True)
     parser.add_argument("--box-folder-id", help="ID of the shared Box folder", required=True)
     parser.add_argument("--lambda-role-arn", help="ARN of the role to use for all lambdas", required=True)
+    parser.add_argument('--secret_role_arn', help="ARN of the role used to retrieve the secret", required=True)
 
     return parser.parse_args()
 
@@ -34,6 +35,7 @@ deploy_args.append("--parameter-overrides")
 deploy_args.append(f"SecretArn={args.secret_arn}")
 deploy_args.append(f"BoxFolderId={args.box_folder_id}")
 deploy_args.append(f"LambdaRoleARN={args.lambda_role_arn}")
+deploy_args.append(f"SecretRoleARN={args.secret_role_arn}")
 subprocess.check_call(deploy_args)
 
 print("Deploy complete, outputs:")
