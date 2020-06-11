@@ -103,7 +103,13 @@ def test_get_box_client(monkeypatch):
         common.get_box_client()
 
 
-def test_is_box_object_public(create_file, create_shared_link):
+def test_is_box_object_public(create_file, create_shared_link, monkeypatch):
+    bad_file = create_file()
+    monkeypatch.delattr(bad_file, "shared_link")
+    with pytest.raises(RuntimeError):
+        common.is_box_object_public(bad_file)
+
+
     unshared_file = create_file()
     assert common.is_box_object_public(unshared_file) is False
 
@@ -135,8 +141,13 @@ def test_is_any_parent_public(create_file, create_folder, create_shared_folder, 
     assert common.is_any_parent_public(client, shared_file) is True
 
 
-def test_create_shared_link(create_folder, create_file, create_shared_link, mock_box_client):
+def test_create_shared_link(create_folder, create_file, create_shared_link, mock_box_client, monkeypatch):
     client = mock_box_client
+
+    bad_folder = create_folder()
+    monkeypatch.delattr(bad_folder, "shared_link")
+    with pytest.raises(RuntimeError):
+        common.create_shared_link(mock_box_client, bad_folder)
 
     folder = create_folder()
     assert folder.shared_link is None
@@ -153,8 +164,14 @@ def test_create_shared_link(create_folder, create_file, create_shared_link, mock
     assert folder.shared_link["effective_permission"] == "can_download"
 
 
-def test_remove_shared_link(create_shared_folder, create_shared_file, create_file, managed_folder, mock_box_client):
+def test_remove_shared_link(create_shared_folder, create_shared_file, create_file, managed_folder, mock_box_client, monkeypatch):
     client = mock_box_client
+
+    bad_folder = create_shared_folder()
+    monkeypatch.delattr(bad_folder, "shared_link")
+    with pytest.raises(RuntimeError):
+        common.remove_shared_link(mock_box_client, bad_folder)
+
     shared_file = create_shared_file()
     shared_file = common.remove_shared_link(client, shared_file)
     assert common.is_box_object_public(shared_file) is False

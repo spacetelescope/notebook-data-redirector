@@ -78,7 +78,7 @@ def get_box_client():
 
 def is_box_object_public(file):
     if not hasattr(file, "shared_link"):
-        raise ValueError("cannot operate on summary file, call get() first")
+        raise RuntimeError("cannot operate on summary file, call get() first")
 
     return (
         file.shared_link is not None
@@ -116,6 +116,7 @@ def remove_shared_link(client, file):
     # to avoid confusion, I'm going to get and return the new file without the shared link
     response = file.remove_shared_link()
     if not response:
+        # not sure how to reach this in testing
         raise RuntimeError("boxsdk API call to remove_shared_link returned False")
     return file.get()
 
@@ -199,15 +200,17 @@ def _get_secret():
         response = client.get_secret_value(SecretId=SECRET_ARN)
     except client.exceptions.ClientError:
 
-        sts_client = boto3.client('sts')
-        assumed_role_object=sts_client.assume_role(
-            RoleArn=SECRET_ROLE_ARN,
-            RoleSessionName="AssumeRoleSession1"
+        sts_client = boto3.client("sts")
+        assumed_role_object = sts_client.assume_role(RoleArn=SECRET_ROLE_ARN, RoleSessionName="AssumeRoleSession1")
+
+        credentials = assumed_role_object["Credentials"]
+
+        response = client.get_secret_value(
+            SecretId=SECRET_ARN,
+            aws_access_key_id=credentials["AccessKeyId"],
+            aws_secret_access_key=credentials["SecretAccessKey"],
+            aws_session_token=credentials["SessionToken"],
         )
-
-        credentials=assumed_role_object['Credentials']
-
-        response = client.get_secret_value(SecretId=SECRET_ARN, aws_access_key_id=credentials['AccessKeyId'], aws_secret_access_key=credentials['SecretAccessKey'], aws_session_token=credentials['SessionToken'])
 
     if "SecretString" in response:
         secret = response["SecretString"]
