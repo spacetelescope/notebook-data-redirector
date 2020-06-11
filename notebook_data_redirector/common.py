@@ -13,6 +13,7 @@ LOGGER.setLevel(logging.INFO)
 SECRET_ARN = os.environ["SECRET_ARN"]
 MANIFEST_TABLE_NAME = os.environ["MANIFEST_TABLE_NAME"]
 BOX_FOLDER_ID = os.environ["BOX_FOLDER_ID"]
+SECRET_ROLE_ARN = os.environ["SECRET_ROLE_ARN"]
 
 
 HANDLED_FILE_TRIGGERS = {
@@ -194,7 +195,19 @@ def iterate_files(folder, shared=False):
 
 def _get_secret():
     client = boto3.client("secretsmanager")
-    response = client.get_secret_value(SecretId=SECRET_ARN)
+    try:
+        response = client.get_secret_value(SecretId=SECRET_ARN)
+    except client.exceptions.ClientError:
+
+        sts_client = boto3.client('sts')
+        assumed_role_object=sts_client.assume_role(
+            RoleArn=SECRET_ROLE_ARN,
+            RoleSessionName="AssumeRoleSession1"
+        )
+
+        credentials=assumed_role_object['Credentials']
+
+        response = client.get_secret_value(SecretId=SECRET_ARN, aws_access_key_id=credentials['AccessKeyId'], aws_secret_access_key=credentials['SecretAccessKey'], aws_session_token=credentials['SessionToken'])
 
     if "SecretString" in response:
         secret = response["SecretString"]
