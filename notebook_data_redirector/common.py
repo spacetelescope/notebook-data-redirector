@@ -198,18 +198,21 @@ def _get_secret():
     client = boto3.client("secretsmanager")
     try:
         response = client.get_secret_value(SecretId=SECRET_ARN)
-    except client.exceptions.ClientError:
+    except client.exceptions.ClientError:  # pragma: no cover
 
         sts_client = boto3.client("sts")
         assumed_role_object = sts_client.assume_role(RoleArn=SECRET_ROLE_ARN, RoleSessionName="AssumeRoleSession1")
 
         credentials = assumed_role_object["Credentials"]
 
-        response = client.get_secret_value(
-            SecretId=SECRET_ARN,
+        client = boto3.client("secretsmanager",
             aws_access_key_id=credentials["AccessKeyId"],
             aws_secret_access_key=credentials["SecretAccessKey"],
             aws_session_token=credentials["SessionToken"],
+        )
+
+        response = client.get_secret_value(
+            SecretId=SECRET_ARN,
         )
 
     if "SecretString" in response:
