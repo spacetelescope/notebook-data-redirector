@@ -198,7 +198,7 @@ def _get_secret():
     client = boto3.client("secretsmanager")
     try:
         response = client.get_secret_value(SecretId=SECRET_ARN)
-    except client.exceptions.ClientError:
+    except client.exceptions.ClientError:  # pragma: no cover
 
         sts_client = boto3.client("sts")
         assumed_role_object = sts_client.assume_role(RoleArn=SECRET_ROLE_ARN, RoleSessionName="AssumeRoleSession1")
