@@ -205,15 +205,14 @@ def _get_secret():
 
         credentials = assumed_role_object["Credentials"]
 
-        client = boto3.client("secretsmanager",
+        client = boto3.client(
+            "secretsmanager",
             aws_access_key_id=credentials["AccessKeyId"],
             aws_secret_access_key=credentials["SecretAccessKey"],
             aws_session_token=credentials["SessionToken"],
         )
 
-        response = client.get_secret_value(
-            SecretId=SECRET_ARN,
-        )
+        response = client.get_secret_value(SecretId=SECRET_ARN)
 
     if "SecretString" in response:
         secret = response["SecretString"]
