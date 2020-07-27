@@ -31,11 +31,13 @@ ROOT_FOLDER = boxsdk.folder.Folder(
 SECRET_ARN = "arn:aws:secretsmanager:test-region:000000000000:secret:test-secret-Az1Qw2"
 SHARED_BOX_FOLDER_ID = "5"
 MANIFEST_TABLE_NAME = "test-manifest-table"
+SECRET_ROLE_ARN = "arn:aws:iam::000000000000:role/SecretsManager-User-mm-urlrd-ops"
 
 
 os.environ["SECRET_ARN"] = SECRET_ARN
 os.environ["BOX_FOLDER_ID"] = SHARED_BOX_FOLDER_ID
 os.environ["MANIFEST_TABLE_NAME"] = MANIFEST_TABLE_NAME
+os.environ["SECRET_ROLE_ARN"] = SECRET_ROLE_ARN
 os.environ["AWS_DEFAULT_REGION"] = "gl-north-14"
 
 

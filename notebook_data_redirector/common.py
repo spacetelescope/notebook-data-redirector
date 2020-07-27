@@ -13,6 +13,7 @@ LOGGER.setLevel(logging.INFO)
 SECRET_ARN = os.environ["SECRET_ARN"]
 MANIFEST_TABLE_NAME = os.environ["MANIFEST_TABLE_NAME"]
 BOX_FOLDER_ID = os.environ["BOX_FOLDER_ID"]
+SECRET_ROLE_ARN = os.environ["SECRET_ROLE_ARN"]
 
 
 HANDLED_FILE_TRIGGERS = {
@@ -77,7 +78,7 @@ def get_box_client():
 
 def is_box_object_public(file):
     if not hasattr(file, "shared_link"):
-        raise ValueError("cannot operate on summary file, call get() first")
+        raise RuntimeError("cannot operate on summary file, call get() first")
 
     return (
         file.shared_link is not None
@@ -115,6 +116,7 @@ def remove_shared_link(client, file):
     # to avoid confusion, I'm going to get and return the new file without the shared link
     response = file.remove_shared_link()
     if not response:
+        # not sure how to reach this in testing
         raise RuntimeError("boxsdk API call to remove_shared_link returned False")
     return file.get()
 
@@ -194,7 +196,23 @@ def iterate_files(folder, shared=False):
 
 def _get_secret():
     client = boto3.client("secretsmanager")
-    response = client.get_secret_value(SecretId=SECRET_ARN)
+    try:
+        response = client.get_secret_value(SecretId=SECRET_ARN)
+    except client.exceptions.ClientError:  # pragma: no cover
+
+        sts_client = boto3.client("sts")
+        assumed_role_object = sts_client.assume_role(RoleArn=SECRET_ROLE_ARN, RoleSessionName="AssumeRoleSession1")
+
+        credentials = assumed_role_object["Credentials"]
+
+        client = boto3.client(
+            "secretsmanager",
+            aws_access_key_id=credentials["AccessKeyId"],
+            aws_secret_access_key=credentials["SecretAccessKey"],
+            aws_session_token=credentials["SessionToken"],
+        )
+
+        response = client.get_secret_value(SecretId=SECRET_ARN)
 
     if "SecretString" in response:
         secret = response["SecretString"]
