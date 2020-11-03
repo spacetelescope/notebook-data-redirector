@@ -141,7 +141,11 @@ def put_file_item(ddb_table, file):
     if not is_box_object_public(file):
         raise ValueError("cannot put a file that hasn't been shared publicly")
 
-    ddb_table.put_item(Item=make_ddb_item(file))
+    # this could cause concurrency issues in a scenario where lots of threads were operating on the ddb at once
+    item = make_ddb_item(file)
+    result = ddb_table.get_item(Key={"filepath": item["filepath"]})
+    if result.get("Item") != item:
+        ddb_table.put_item(Item=item)
 
 
 def delete_file_item(ddb_table, file):
