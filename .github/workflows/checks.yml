@@ -79,7 +79,7 @@ jobs:
       - name: run pytest code coverage check
         run: pytest --cov=notebook_data_redirector --cov-fail-under 95
 
-  coverage:
+  pytest:
     name: pytest
     runs-on: ubuntu-18.04
 
