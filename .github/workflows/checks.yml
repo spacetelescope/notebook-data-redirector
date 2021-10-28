@@ -71,7 +71,7 @@ jobs:
           python-version: 3.7.12
 
       - name: install dependencies
-        run: pip install pytest coverage
+        run: pip install pytest pytest-cov
 
       - name: checkout code
         uses: actions/checkout@v2
