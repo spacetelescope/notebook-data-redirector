@@ -1,0 +1,101 @@
+name: code checks
+
+on: [push, pull_request]
+
+jobs:
+  bandit:
+    name: run bandit
+    runs-on: ubuntu-18.04
+
+    steps:
+      - name: set up python 3.7.12
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7.12
+
+      - name: install dependencies
+        run: pip install bandit
+
+      - name: checkout code
+        uses: actions/checkout@v2
+
+      - name: run bandit security checks
+        run: bandit -ll -r notebook_data_redirector
+
+  black:
+    name: run black
+    runs-on: ubuntu-18.04
+
+    steps:
+      - name: set up python 3.7.12
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7.12
+
+      - name: install dependencies
+        run: pip install black
+
+      - name: checkout code
+        uses: actions/checkout@v2
+
+      - name: run black style checks
+        run: black --check notebook_data_redirector tests -l 120 -v
+
+  flake8:
+    name: run flake8
+    runs-on: ubuntu-18.04
+
+    steps:
+      - name: set up python 3.7.12
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7.12
+
+      - name: install dependencies
+        run: pip install flake8
+
+      - name: checkout code
+        uses: actions/checkout@v2
+
+      - name: run flake8 python lint checks
+        run: flake8 --count --max-line-length=120 notebook_data_redirector tests
+
+  coverage:
+    name: code coverage check
+    runs-on: ubuntu-18.04
+
+    steps:
+      - name: set up python 3.7.12
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7.12
+
+      - name: checkout code
+        uses: actions/checkout@v2
+
+      - name: install requirements
+        run: pip install .[dev]
+
+      - name: run pytest code coverage check
+        run: pytest --cov=notebook_data_redirector --cov-fail-under 95
+
+  pytest:
+    name: pytest
+    runs-on: ubuntu-18.04
+
+    steps:
+      - name: set up python 3.7.12
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7.12
+
+      - name: checkout code
+        uses: actions/checkout@v2
+
+      - name: install requirements
+        run: pip install .[dev]
+
+      - name: run pytest
+        run: pytest
+
+        
