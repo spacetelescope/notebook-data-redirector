@@ -59,4 +59,24 @@ jobs:
 
       - name: run flake8 python lint checks
         run: flake8 --count --max-line-length=120 notebook_data_redirector tests
+
+  coverage:
+    name: code coverage check
+    runs-on: ubuntu-18.04
+
+    steps:
+      - name: set up python 3.7.12
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.7.12
+
+      - name: install dependencies
+        run: pip install pytest
+
+      - name: checkout code
+        run: actions/checkout@v2
+
+      - name: run pytest code coverage check
+        run: pytest --cov=notebook_data_redirector --cov-fail-under 95
+
         
