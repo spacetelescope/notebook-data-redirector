@@ -232,6 +232,3 @@ def _get_secret():
         return json.loads(secret)
     else:
         raise NotImplementedError("Binary secret not implemented")
-    
-
-
