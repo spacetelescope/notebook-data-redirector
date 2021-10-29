@@ -59,24 +59,24 @@ Resources:
             Method: post
 
 
-  SyncFunction:
-    Type: AWS::Serverless::Function
-    Properties:
-      MemorySize: 1024
-      # 15 minutes (Lambda's maximum)
-      Timeout: 900
-      ReservedConcurrentExecutions: 1
-      Handler: sync.lambda_handler
-      Role: !Ref LambdaRoleARN
-      Environment:
-        Variables:
-          MANIFEST_TABLE_NAME: !Ref ManifestTable
-      Events:
-        SyncFunctionEvent:
-          Type: Schedule
-          Properties:
-            # Run every 15 minutes
-            Schedule: cron(*/15 * * * ? *)
+  # SyncFunction:
+  #   Type: AWS::Serverless::Function
+  #   Properties:
+  #     MemorySize: 1024
+  #     # 15 minutes (Lambda's maximum)
+  #     Timeout: 900
+  #     ReservedConcurrentExecutions: 1
+  #     Handler: sync.lambda_handler
+  #     Role: !Ref LambdaRoleARN
+  #     Environment:
+  #       Variables:
+  #         MANIFEST_TABLE_NAME: !Ref ManifestTable
+  #     Events:
+  #       SyncFunctionEvent:
+  #         Type: Schedule
+  #         Properties:
+  #           # Run every 15 minutes
+  #           Schedule: cron(*/15 * * * ? *)
 
   RedirectorFunction:
     Type: AWS::Serverless::Function
