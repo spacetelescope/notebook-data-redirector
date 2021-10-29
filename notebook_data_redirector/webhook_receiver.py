@@ -59,13 +59,13 @@ def lambda_handler(event, context):
         parent_public = common.is_any_parent_public(client, file)
         if (not common.is_box_object_public(file)) and parent_public:
             # this includes an api call
-            # file = common.create_shared_link(client, file, access="open", allow_download=True)
-            # LOGGER.info(f"created shared link for {file}")
+            file = common.create_shared_link(client, file, access="open", allow_download=True)
+            LOGGER.info(f"created shared link for {file}")
             pass
         # if the file is public but no parent directory is, delete the shared link
         if (common.is_box_object_public(file)) and (not parent_public):
-            # file = common.remove_shared_link(client, file)
-            # LOGGER.info(f"removed shared link for {file}")
+            file = common.remove_shared_link(client, file)
+            LOGGER.info(f"removed shared link for {file}")
             pass
 
         if common.is_box_object_public(file):
@@ -89,13 +89,13 @@ def lambda_handler(event, context):
             # if the file isn't public but any parent directory is
             if (not common.is_box_object_public(file)) and shared:
                 # this includes an api call
-                # file = common.create_shared_link(client, file, access="open", allow_download=True)
-                # LOGGER.info(f"created shared link for {file}")
+                file = common.create_shared_link(client, file, access="open", allow_download=True)
+                LOGGER.info(f"created shared link for {file}")
                 pass
 
             elif (common.is_box_object_public(file)) and (not shared):
-                # file = common.remove_shared_link(client, file)
-                # LOGGER.info(f"removed shared link for {file}")
+                file = common.remove_shared_link(client, file)
+                LOGGER.info(f"removed shared link for {file}")
                 pass
 
             if common.is_box_object_public(file):
