@@ -60,9 +60,11 @@ def lambda_handler(event, context):
         if (not common.is_box_object_public(file)) and parent_public:
             # this includes an api call
             file = common.create_shared_link(client, file, access="open", allow_download=True)
+            LOGGER.info(f"created shared link for {file}")
         # if the file is public but no parent directory is, delete the shared link
         if (common.is_box_object_public(file)) and (not parent_public):
             file = common.remove_shared_link(client, file)
+            LOGGER.info(f"removed shared link for {file}")
 
         if common.is_box_object_public(file):
             common.put_file_item(ddb, file)
@@ -78,18 +80,25 @@ def lambda_handler(event, context):
             return STATUS_SUCCESS
 
         folder_shared = common.is_box_object_public(folder)
+        # for debugging how long lambda is taking
+        files_handled = 0
         for file, shared in common.iterate_files(folder, shared=folder_shared):
 
             # if the file isn't public but any parent directory is
             if (not common.is_box_object_public(file)) and shared:
                 # this includes an api call
                 file = common.create_shared_link(client, file, access="open", allow_download=True)
+                LOGGER.info(f"created shared link for {file}")
+
             elif (common.is_box_object_public(file)) and (not shared):
                 file = common.remove_shared_link(client, file)
+                LOGGER.info(f"removed shared link for {file}")
 
             if common.is_box_object_public(file):
                 common.put_file_item(ddb, file)
             else:
                 common.delete_file_item(ddb, file)
+            files_handled += 1
+            LOGGER.info(f"handled {files_handled} files")
 
     return STATUS_SUCCESS
