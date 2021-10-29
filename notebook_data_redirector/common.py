@@ -76,7 +76,7 @@ def get_box_client():
     app_client = client.as_user(app_user)
 
     tend = time.time()
-    LOGGER.info(f"Connecting to Box took {tstart-tend} seconds")
+    LOGGER.info(f"Connecting to Box took {tend-tstart} seconds")
 
     return app_client, webhook_signature_key
 
@@ -204,6 +204,7 @@ def iterate_files(folder, shared=False):
 
 
 def _get_secret():
+    tstart = time.time()
     client = boto3.client("secretsmanager")
     try:
         response = client.get_secret_value(SecretId=SECRET_ARN)
@@ -223,8 +224,14 @@ def _get_secret():
 
         response = client.get_secret_value(SecretId=SECRET_ARN)
 
+    tend = time.time()
+    LOGGER.info(f"_get_secret() took {tend-tstart} seconds")
+
     if "SecretString" in response:
         secret = response["SecretString"]
         return json.loads(secret)
     else:
         raise NotImplementedError("Binary secret not implemented")
+    
+
+
