@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import time
 
 import boto3
 from boxsdk import Client, JWTAuth
@@ -42,6 +43,7 @@ GET_ITEMS_LIMIT = 1000
 
 
 def get_box_client():
+    tstart = time.time()
     secret = _get_secret()
 
     client_id = secret["box_client_id"]
@@ -72,6 +74,9 @@ def get_box_client():
         return client, webhook_signature_key
 
     app_client = client.as_user(app_user)
+
+    tend = time.time()
+    LOGGER.info(f"Connecting to Box took {tstart-tend} seconds")
 
     return app_client, webhook_signature_key
 
