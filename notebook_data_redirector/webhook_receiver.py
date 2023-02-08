@@ -79,7 +79,6 @@ def lambda_handler(event, context):
 
         folder_shared = common.is_box_object_public(folder)
         for file, shared in common.iterate_files(folder, shared=folder_shared):
-
             # if the file isn't public but any parent directory is
             if (not common.is_box_object_public(file)) and shared:
                 # this includes an api call
