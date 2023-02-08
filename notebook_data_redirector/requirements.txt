@@ -7,7 +7,7 @@ chardet==3.0.4
 cryptography==3.3.2
 idna==2.8
 pycparser==2.19
-PyJWT==1.7.1
+PyJWT==2.4.0
 requests~=2.22
 requests-toolbelt==0.9.1
 six==1.12.0
