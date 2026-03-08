@@ -75,8 +75,8 @@ Resources:
         SyncFunctionEvent:
           Type: Schedule
           Properties:
-            # Run every 15 minutes
-            Schedule: cron(*/15 * * * ? *)
+            # Run once daily at 6:00 AM UTC
+            Schedule: cron(0 6 * * ? *)
 
   RedirectorFunction:
     Type: AWS::Serverless::Function
