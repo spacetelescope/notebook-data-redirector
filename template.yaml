@@ -21,7 +21,7 @@ Parameters:
 
 Globals:
   Function:
-    Runtime: python3.7
+    Runtime: python3.12
     Handler: index.handler
     CodeUri: notebook_data_redirector/
     Environment:

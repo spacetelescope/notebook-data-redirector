@@ -8,14 +8,15 @@ import base64
 from pathlib import Path
 
 import boxsdk
+import boxsdk.object.file
+import boxsdk.object.folder
 import pytest
-
 
 redirector_path = Path(__file__).resolve().parent.parent / "notebook_data_redirector"
 sys.path.append(str(redirector_path))
 
 
-ROOT_FOLDER = boxsdk.folder.Folder(
+ROOT_FOLDER = boxsdk.object.folder.Folder(
     None,
     "0",
     {
@@ -92,7 +93,7 @@ def create_file(box_files, create_shared_link, monkeypatch):
         if "name" not in response_object:
             response_object["name"] = f"test-file-{object_id}"
 
-        file = boxsdk.file.File(None, object_id, response_object)
+        file = boxsdk.object.file.File(None, object_id, response_object)
         monkeypatch.setattr(file, "get", lambda: file)
         # list.remove(file) seems to be causing get_url to be called to compare two files, so we'll use the path_collection as a substitute for the url
         monkeypatch.setattr(file, "get_url", lambda: file.path_collection)
@@ -135,7 +136,7 @@ def create_folder(box_folders, box_files, create_shared_link, monkeypatch):
         if "name" not in response_object:
             response_object["name"] = f"test-folder-{object_id}"
 
-        folder = boxsdk.folder.Folder(None, object_id, response_object)
+        folder = boxsdk.object.folder.Folder(None, object_id, response_object)
 
         def get_items(limit=100, offset=0, fields=None):
             folder_items = [

@@ -6,7 +6,6 @@ import pytest
 import common
 import webhook_receiver
 
-
 SHARED_LINK_TRIGGERS = {"SHARED_LINK.CREATED", "SHARED_LINK.UPDATED", "SHARED_LINK.DELETED"}
 
 

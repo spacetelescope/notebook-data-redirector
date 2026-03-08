@@ -26,7 +26,7 @@ print("Building...")
 subprocess.check_call(["sam", "build"])
 
 print("Packaging...")
-subprocess.check_call(["sam", "package", "--output-template", OUTPUT_TEMPLATE, "--s3-bucket", args.deploy_bucket])
+subprocess.check_call(["sam", "package", "--output-template-file", OUTPUT_TEMPLATE, "--s3-bucket", args.deploy_bucket, "--debug"])
 
 print("Deploying...")
 deploy_args = ["sam", "deploy", "--template-file", "packaged.yaml", "--capabilities", "CAPABILITY_IAM", "--debug"]

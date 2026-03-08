@@ -6,7 +6,6 @@ import boto3
 from boxsdk import Client, JWTAuth
 from boxsdk.exception import BoxAPIException
 
-
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 

@@ -1,2 +1,26 @@
+[tool.poetry]
+name = "notebook-data-redirector"
+version = "0.1.0"
+description = "An AWS application that redirects requests to files publicly hosted on Box."
+authors = ["STScI <help@stsci.edu>"]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+boxsdk = {version = ">=3.0,<4", extras = ["jwt"]}
+boto3 = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = ">=7.0"
+pytest-cov = ">=4.0"
+black = ">=23.0"
+flake8 = "*"
+bandit = "*"
+tox = ">=4.0"
+aws-sam-cli = "*"
+
 [tool.black]
 line-length = 120
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

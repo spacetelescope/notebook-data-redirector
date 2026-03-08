@@ -2,7 +2,6 @@ import logging
 
 import common
 
-
 LOGGER = logging.getLogger(__name__)
 LOGGER.setLevel(logging.INFO)
 
