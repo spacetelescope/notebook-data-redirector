@@ -8,7 +8,7 @@ class TestSync:
     @pytest.fixture(autouse=True)
     def monkeypatch_clients(self, monkeypatch, mock_ddb_table, mock_box_client):
         monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
-        monkeypatch.setattr(common, "get_box_client", lambda: (mock_box_client, "some-webhook-key"))
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
 
     def test_sync_empty(self, ddb_items):
         sync.lambda_handler({}, None)

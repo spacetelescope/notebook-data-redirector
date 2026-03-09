@@ -43,6 +43,15 @@ os.environ["AWS_DEFAULT_REGION"] = "gl-north-14"
 
 
 @pytest.fixture(autouse=True)
+def _reset_caches():
+    import common
+
+    common._reset_all_caches()
+    yield
+    common._reset_all_caches()
+
+
+@pytest.fixture(autouse=True)
 def managed_folder(create_folder):
     return create_folder(id=SHARED_BOX_FOLDER_ID)
 

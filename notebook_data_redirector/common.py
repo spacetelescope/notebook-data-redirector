@@ -1,18 +1,161 @@
 import os
 import json
 import logging
+import time
 
 import boto3
 from boxsdk import Client, JWTAuth
 from boxsdk.exception import BoxAPIException
-
-LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.INFO)
+from boxsdk.object.webhook import Webhook
 
 SECRET_ARN = os.environ["SECRET_ARN"]
 MANIFEST_TABLE_NAME = os.environ["MANIFEST_TABLE_NAME"]
 BOX_FOLDER_ID = os.environ["BOX_FOLDER_ID"]
 SECRET_ROLE_ARN = os.environ["SECRET_ROLE_ARN"]
+
+
+# --- Structured JSON Logging ---
+
+
+class _JsonFormatter(logging.Formatter):
+    def format(self, record):
+        entry = {
+            "level": record.levelname,
+            "message": record.getMessage(),
+        }
+        if hasattr(record, "_structured"):
+            for key, value in record._structured.items():
+                if value is not None:
+                    entry[key] = value
+        return json.dumps(entry, default=str)
+
+
+def _configure_logging():
+    root = logging.getLogger()
+    if not any(isinstance(h.formatter, _JsonFormatter) for h in root.handlers):
+        # Replace existing handlers' formatters rather than nuking them,
+        # so Lambda's built-in CloudWatch handler (and its request ID
+        # correlation) is preserved.
+        if root.handlers:
+            for h in root.handlers:
+                h.setFormatter(_JsonFormatter())
+        else:
+            handler = logging.StreamHandler()
+            handler.setFormatter(_JsonFormatter())
+            root.addHandler(handler)
+        root.setLevel(logging.INFO)
+
+
+_configure_logging()
+
+LOGGER = logging.getLogger(__name__)
+
+
+def log_action(level, function, action, **kwargs):
+    """Emit a structured JSON log entry.
+
+    Required: level, function, action.
+    Optional kwargs (omitted when None): filepath, box_file_id,
+    duration_ms, error_type, remediation.
+    """
+    extra = {"function": function, "action": action}
+    for key, value in kwargs.items():
+        if value is not None:
+            extra[key] = value
+
+    logger = logging.getLogger(function)
+    log_func = getattr(logger, level.lower())
+    log_func(action, extra={"_structured": extra})
+
+
+# --- Box Client Lifecycle (lazy-init + caching) ---
+
+_cached_secret = None
+_box_client = None
+_box_client_expires_at = 0
+
+
+def _get_cached_secret():
+    global _cached_secret
+    if _cached_secret is None:
+        _cached_secret = _get_secret()
+    return _cached_secret
+
+
+def get_webhook_signature_key():
+    """Return the webhook signature key without initializing a Box client."""
+    return _get_cached_secret()["box_webhook_signature_key"]
+
+
+def get_box_client():
+    """Lazy-init Box client, re-init on JWT expiry (55-min TTL)."""
+    global _box_client, _box_client_expires_at
+    if _box_client is None or time.time() > _box_client_expires_at:
+        _box_client = _create_box_client()
+        _box_client_expires_at = time.time() + 3300  # 55 min
+    return _box_client
+
+
+def _create_box_client():
+    secret = _get_cached_secret()
+
+    auth = JWTAuth(
+        client_id=secret["box_client_id"],
+        client_secret=secret["box_client_secret"],
+        enterprise_id=secret["box_enterprise_id"],
+        jwt_key_id=secret["box_jwt_key_id"],
+        rsa_private_key_data=secret["box_rsa_private_key_data"],
+        rsa_private_key_passphrase=secret["box_rsa_private_key_passphrase"],
+    )
+    auth.authenticate_instance()
+
+    client = Client(auth)
+
+    users = client.users()
+    try:
+        app_user = next(users)
+    except StopIteration:
+        log_action("WARNING", "common", "no_app_user", remediation="using service account as box client")
+        return client
+
+    return client.as_user(app_user)
+
+
+def _clear_box_client_cache():
+    global _box_client, _box_client_expires_at
+    _box_client = None
+    _box_client_expires_at = 0
+
+
+def _reset_all_caches():
+    """Test-only: clear all module-level caches."""
+    global _cached_secret, _box_client, _box_client_expires_at
+    _cached_secret = None
+    _box_client = None
+    _box_client_expires_at = 0
+
+
+def with_box_retry(func, *args, **kwargs):
+    """Call func; on 401 BoxAPIException, clear client cache and retry once."""
+    try:
+        return func(*args, **kwargs)
+    except BoxAPIException as e:
+        if e.status == 401:
+            log_action(
+                "WARNING",
+                "common",
+                "box_auth_retry",
+                error_type="jwt_expired",
+                remediation="cache_cleared_retry",
+            )
+            _clear_box_client_cache()
+            return func(*args, **kwargs)
+        raise
+
+
+def validate_webhook_message(body, headers, signature_key):
+    """Validate a webhook message signature without requiring a Box client."""
+    return Webhook.validate_message(body, headers, signature_key)
 
 
 HANDLED_FILE_TRIGGERS = {
@@ -38,41 +181,6 @@ HANDLED_TRIGGERS = HANDLED_FILE_TRIGGERS | HANDLED_FOLDER_TRIGGERS
 GET_ITEMS_FIELDS = {"name", "path_collection", "shared_link"}
 
 GET_ITEMS_LIMIT = 1000
-
-
-def get_box_client():
-    secret = _get_secret()
-
-    client_id = secret["box_client_id"]
-    client_secret = secret["box_client_secret"]
-    enterprise_id = secret["box_enterprise_id"]
-    jwt_key_id = secret["box_jwt_key_id"]
-    rsa_private_key_data = secret["box_rsa_private_key_data"]
-    rsa_private_key_passphrase = secret["box_rsa_private_key_passphrase"]
-    webhook_signature_key = secret["box_webhook_signature_key"]
-
-    auth = JWTAuth(
-        client_id=client_id,
-        client_secret=client_secret,
-        enterprise_id=enterprise_id,
-        jwt_key_id=jwt_key_id,
-        rsa_private_key_data=rsa_private_key_data,
-        rsa_private_key_passphrase=rsa_private_key_passphrase,
-    )
-    auth.authenticate_instance()
-
-    client = Client(auth)
-
-    users = client.users()
-    try:
-        app_user = next(users)
-    except StopIteration:
-        LOGGER.warning("no app user exists, so the service account will be used as the box api client")
-        return client, webhook_signature_key
-
-    app_client = client.as_user(app_user)
-
-    return app_client, webhook_signature_key
 
 
 def is_box_object_public(file):

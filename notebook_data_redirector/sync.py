@@ -1,18 +1,13 @@
-import logging
-
 import common
-
-LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.INFO)
 
 
 def lambda_handler(event, context):
     ddb_table = common.get_ddb_table()
-    box_client, _ = common.get_box_client()
+    box_client = common.get_box_client()
     root_folder = common.get_folder(box_client, common.BOX_FOLDER_ID)
     root_shared = common.is_box_object_public(root_folder)
 
-    LOGGER.info("Checking files in Box")
+    common.log_action("INFO", "sync", "checking_box_files")
     shared_file_ids = set()
     shared_filepaths = set()
     count = 0
@@ -30,9 +25,9 @@ def lambda_handler(event, context):
             common.put_file_item(ddb_table, file)
         else:
             common.delete_file_item(ddb_table, file)
-    LOGGER.info("Processed %s files", count)
+    common.log_action("INFO", "sync", "box_files_processed", count=count)
 
-    LOGGER.info("Checking items in DynamoDB")
+    common.log_action("INFO", "sync", "checking_ddb_items")
     count = 0
     scan_response = ddb_table.scan()
     delete_keys = set()
@@ -52,4 +47,4 @@ def lambda_handler(event, context):
 
     for key in delete_keys:
         ddb_table.delete_item(Key={"filepath": key})
-    LOGGER.info("Processed %s items", count)
+    common.log_action("INFO", "sync", "ddb_items_processed", count=count)

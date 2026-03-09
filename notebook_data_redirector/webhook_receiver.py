@@ -1,21 +1,16 @@
-import logging
 import json
 
 import common
-
-LOGGER = logging.getLogger(__name__)
-LOGGER.setLevel(logging.INFO)
 
 STATUS_SUCCESS = {"statusCode": 200}
 
 
 def lambda_handler(event, context):
-    LOGGER.info(json.dumps(event))
+    common.log_action("INFO", "webhook_receiver", "event_received")
 
     raw_body = event["body"]
     body = json.loads(raw_body)
     trigger = body["trigger"]
-    webhook_id = body["webhook"]["id"]
     source = body["source"]
 
     # The event structure varies by trigger
@@ -30,26 +25,29 @@ def lambda_handler(event, context):
         # not covered by tests
         raise RuntimeError("Missing id field")
 
-    LOGGER.info("Received trigger %s on %s id %s", trigger, box_type, box_id)
+    common.log_action("INFO", "webhook_receiver", "trigger_received", box_file_id=box_id)
 
     # only get a box client if we're actually going to need one
     if trigger not in common.HANDLED_TRIGGERS:
-        LOGGER.info("%s is not supported by this endpoint", trigger)
+        common.log_action("INFO", "webhook_receiver", "trigger_unsupported")
         return STATUS_SUCCESS
 
-    client, webhook_key = common.get_box_client()
-    ddb = common.get_ddb_table()
+    # Signature verification uses only the webhook key — no Box client needed
+    webhook_key = common.get_webhook_signature_key()
 
-    webhook = client.webhook(webhook_id)
-    is_valid = webhook.validate_message(bytes(raw_body, "utf-8"), event["headers"], webhook_key)
+    is_valid = common.validate_webhook_message(bytes(raw_body, "utf-8"), event["headers"], webhook_key)
     if not is_valid:
-        LOGGER.critical("Received invalid webhook request")
+        common.log_action("ERROR", "webhook_receiver", "invalid_signature")
         return STATUS_SUCCESS
+
+    # Box client only initialized after signature is validated
+    client = common.get_box_client()
+    ddb = common.get_ddb_table()
 
     if (trigger in common.HANDLED_FILE_TRIGGERS) and (box_type == "file"):
         file = common.get_file(client, box_id)
         if not file:
-            LOGGER.warning("File %s is missing (trashed or deleted)", box_id)
+            common.log_action("WARNING", "webhook_receiver", "file_missing", box_file_id=box_id)
             # We don't know what the file's path was, so we'll just have to
             # let the sync lambda clean up DynamoDB.
             return STATUS_SUCCESS
@@ -70,7 +68,7 @@ def lambda_handler(event, context):
     elif (trigger in common.HANDLED_FOLDER_TRIGGERS) and (box_type == "folder"):
         folder = common.get_folder(client, box_id)
         if not folder:
-            LOGGER.warning("Folder %s is missing (trashed or deleted)", box_id)
+            common.log_action("WARNING", "webhook_receiver", "folder_missing", box_file_id=box_id)
             # The Box API doesn't appear to give us a way to list the contents of
             # a trashed folder, so we're just going to have to let the sync lambda
             # clean up the relevant DynamoDB rows.

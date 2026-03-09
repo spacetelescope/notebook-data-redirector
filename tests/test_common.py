@@ -3,66 +3,47 @@ import json
 import pytest
 from botocore.exceptions import ClientError
 import boxsdk
+from boxsdk.exception import BoxAPIException
 
 from . import conftest
 import common
 
+# --- Shared helpers for Box client tests ---
 
-def test_get_box_client(monkeypatch):
-    client_id = "client_id"
-    client_secret = "client_secret"
-    enterprise_id = "enterprise_id"
-    jwt_key_id = "jwt_key_id"
-    rsa_private_key_data = "rsa_private_key_data"
-    rsa_private_key_passphrase = "rsa_private_key_passphrase"
-    webhook_signature_key = "webhook_signature_key"
+MOCK_SECRET = {
+    "box_client_id": "client_id",
+    "box_client_secret": "client_secret",
+    "box_enterprise_id": "enterprise_id",
+    "box_jwt_key_id": "jwt_key_id",
+    "box_rsa_private_key_data": "rsa_private_key_data",
+    "box_rsa_private_key_passphrase": "rsa_private_key_passphrase",
+    "box_webhook_signature_key": "webhook_signature_key",
+}
+
+
+@pytest.fixture
+def mock_box_infra(monkeypatch):
+    """Set up mock Secrets Manager, JWTAuth, and Client for Box client tests."""
+    create_count = {"value": 0}
 
     class MockSecretsClient:
         def get_secret_value(self, SecretId):
             if SecretId == conftest.SECRET_ARN:
-                secret = {
-                    "box_client_id": client_id,
-                    "box_client_secret": client_secret,
-                    "box_enterprise_id": enterprise_id,
-                    "box_jwt_key_id": jwt_key_id,
-                    "box_rsa_private_key_data": rsa_private_key_data,
-                    "box_rsa_private_key_passphrase": rsa_private_key_passphrase,
-                    "box_webhook_signature_key": webhook_signature_key,
-                }
-                secret_string = json.dumps(secret)
-                return {"SecretString": secret_string}
-            else:
-                raise ClientError({}, "GetSecretValue")
+                return {"SecretString": json.dumps(MOCK_SECRET)}
+            raise ClientError({}, "GetSecretValue")
 
-    mock_secrets_client = MockSecretsClient()
-
-    def mock_client(service_name):
+    def mock_boto_client(service_name):
         if service_name == "secretsmanager":
-            return mock_secrets_client
-        else:
-            raise NotImplementedError()
+            return MockSecretsClient()
+        raise NotImplementedError()
 
-    monkeypatch.setattr("boto3.client", mock_client)
+    monkeypatch.setattr("boto3.client", mock_boto_client)
 
     class MockJWTAuth:
-        def __init__(
-            self, client_id, client_secret, enterprise_id, jwt_key_id, rsa_private_key_data, rsa_private_key_passphrase
-        ):
-            self._client_id = client_id
-            self._client_secret = client_secret
-            self._enterprise_id = enterprise_id
-            self._jwt_key_id = jwt_key_id
-            self._rsa_private_key_data = rsa_private_key_data
-            self._rsa_private_key_passphrase = rsa_private_key_passphrase
+        def __init__(self, **kwargs):
             self._authenticated = False
 
         def authenticate_instance(self):
-            assert self._client_id == client_id
-            assert self._client_secret == client_secret
-            assert self._enterprise_id == enterprise_id
-            assert self._jwt_key_id == jwt_key_id
-            assert self._rsa_private_key_data == rsa_private_key_data
-            assert self._rsa_private_key_passphrase == rsa_private_key_passphrase
             self._authenticated = True
 
     monkeypatch.setattr(common, "JWTAuth", MockJWTAuth)
@@ -73,6 +54,7 @@ def test_get_box_client(monkeypatch):
         def __init__(self, auth):
             self._auth = auth
             self._as_user = None
+            create_count["value"] += 1
 
         def users(self):
             return (u for u in MockClient.USERS)
@@ -83,24 +65,162 @@ def test_get_box_client(monkeypatch):
 
     monkeypatch.setattr(common, "Client", MockClient)
 
-    client, key = common.get_box_client()
+    return {"MockClient": MockClient, "create_count": create_count}
+
+
+def test_get_box_client_fresh(mock_box_infra):
+    client = common.get_box_client()
     assert client._auth._authenticated is True
     assert client._as_user is None
-    assert key == webhook_signature_key
+    assert mock_box_infra["create_count"]["value"] == 1
 
+
+def test_get_box_client_with_app_user(mock_box_infra):
     user = object()
-    MockClient.USERS.append(user)
-    client, key = common.get_box_client()
+    mock_box_infra["MockClient"].USERS.append(user)
+    client = common.get_box_client()
     assert client._auth._authenticated is True
     assert client._as_user is user
-    assert key == webhook_signature_key
 
-    def get_secret_value_binary(SecretId):
-        return {"SecretBinary": b"super-secret-bytes"}
 
-    monkeypatch.setattr(mock_secrets_client, "get_secret_value", get_secret_value_binary)
+def test_get_box_client_cached(mock_box_infra):
+    client1 = common.get_box_client()
+    client2 = common.get_box_client()
+    assert client1 is client2
+    assert mock_box_infra["create_count"]["value"] == 1
+
+
+def test_get_box_client_expiry(mock_box_infra, monkeypatch):
+    client1 = common.get_box_client()
+    assert mock_box_infra["create_count"]["value"] == 1
+
+    # Force expiry by setting expires_at to the past
+    common._box_client_expires_at = 0
+
+    client2 = common.get_box_client()
+    assert client2 is not client1
+    assert mock_box_infra["create_count"]["value"] == 2
+
+
+def test_get_box_client_binary_secret(monkeypatch):
+    class MockSecretsClient:
+        def get_secret_value(self, SecretId):
+            return {"SecretBinary": b"super-secret-bytes"}
+
+    def mock_boto_client(service_name):
+        if service_name == "secretsmanager":
+            return MockSecretsClient()
+        raise NotImplementedError()
+
+    monkeypatch.setattr("boto3.client", mock_boto_client)
+
     with pytest.raises(NotImplementedError):
-        common.get_box_client()
+        common._get_cached_secret()
+
+
+def test_get_webhook_signature_key_no_client_init(mock_box_infra):
+    key = common.get_webhook_signature_key()
+    assert key == "webhook_signature_key"
+    # Box client should NOT have been created
+    assert mock_box_infra["create_count"]["value"] == 0
+
+
+def test_with_box_retry_success():
+    result = common.with_box_retry(lambda: "ok")
+    assert result == "ok"
+
+
+def test_with_box_retry_401(mock_box_infra):
+    call_count = {"value": 0}
+
+    def failing_then_ok():
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            raise BoxAPIException(401)
+        return "recovered"
+
+    result = common.with_box_retry(failing_then_ok)
+    assert result == "recovered"
+    assert call_count["value"] == 2
+
+
+def test_with_box_retry_non_401():
+    def always_fails():
+        raise BoxAPIException(403)
+
+    with pytest.raises(BoxAPIException):
+        common.with_box_retry(always_fails)
+
+
+def test_with_box_retry_401_twice(mock_box_infra):
+    def always_401():
+        raise BoxAPIException(401)
+
+    with pytest.raises(BoxAPIException):
+        common.with_box_retry(always_401)
+
+
+@pytest.fixture
+def capture_log():
+    """Capture structured log output via a StringIO handler."""
+    import io
+    import logging
+
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(common._JsonFormatter())
+    root = logging.getLogger()
+    root.addHandler(handler)
+    yield buf
+    root.removeHandler(handler)
+
+
+def test_log_action_structured_output(capture_log):
+    common.log_action("INFO", "redirector", "request_received", filepath="test/path.dat")
+    output = capture_log.getvalue().strip()
+    log_entry = json.loads(output)
+    assert log_entry["level"] == "INFO"
+    assert log_entry["function"] == "redirector"
+    assert log_entry["action"] == "request_received"
+    assert log_entry["filepath"] == "test/path.dat"
+
+
+def test_log_action_omits_none_fields(capture_log):
+    common.log_action("INFO", "sync", "checking_files")
+    output = capture_log.getvalue().strip()
+    log_entry = json.loads(output)
+    assert "filepath" not in log_entry
+    assert "box_file_id" not in log_entry
+    assert "duration_ms" not in log_entry
+    assert "error_type" not in log_entry
+    assert "remediation" not in log_entry
+
+
+def test_log_action_no_credential_leak(capture_log):
+    common.log_action("ERROR", "common", "test_action", error_type="auth_failure", remediation="retry")
+    output = capture_log.getvalue().strip()
+    log_entry = json.loads(output)
+    assert log_entry["error_type"] == "auth_failure"
+    assert log_entry["remediation"] == "retry"
+    # Verify no secret fields leak
+    for secret_field in (
+        "box_client_id",
+        "box_client_secret",
+        "rsa_private_key_data",
+        "box_rsa_private_key_passphrase",
+    ):
+        assert secret_field not in output
+
+
+def test_webhook_handler_signature_key_without_client(mock_box_infra):
+    """Verify get_webhook_signature_key does not trigger _create_box_client."""
+    key = common.get_webhook_signature_key()
+    assert key == "webhook_signature_key"
+    # Verify no client was created (create_count stays at 0)
+    assert mock_box_infra["create_count"]["value"] == 0
+    # Now get client — should bump count
+    common.get_box_client()
+    assert mock_box_infra["create_count"]["value"] == 1
 
 
 def test_is_box_object_public(create_file, create_shared_link, monkeypatch):

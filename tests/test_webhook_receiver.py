@@ -15,9 +15,17 @@ def handle_event(event):
 
 class TestWebhookReceiver:
     @pytest.fixture(autouse=True)
-    def monkeypatch_clients(self, monkeypatch, mock_ddb_table, mock_box_client, box_webhook_signature_key):
+    def monkeypatch_clients(
+        self, monkeypatch, mock_ddb_table, mock_box_client, box_webhook_signature_key, compute_webhook_signature
+    ):
         monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
-        monkeypatch.setattr(common, "get_box_client", lambda: (mock_box_client, box_webhook_signature_key))
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "get_webhook_signature_key", lambda: box_webhook_signature_key)
+
+        def mock_validate(body, headers, signature_key):
+            return compute_webhook_signature(body) == headers["box-signature-primary"]
+
+        monkeypatch.setattr(common, "validate_webhook_message", mock_validate)
 
     @pytest.fixture
     def create_webhook_event(self, box_webhook_signature_key, box_webhook_id, compute_webhook_signature):
