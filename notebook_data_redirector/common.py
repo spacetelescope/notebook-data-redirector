@@ -45,6 +45,11 @@ def _configure_logging():
             root.addHandler(handler)
         root.setLevel(logging.INFO)
 
+    # Suppress noisy/dangerous third-party loggers — boxsdk and urllib3
+    # emit JWT assertions and client_secret at INFO level during auth.
+    for name in ("boxsdk", "urllib3", "boto3", "botocore"):
+        logging.getLogger(name).setLevel(logging.WARNING)
+
 
 _configure_logging()
 

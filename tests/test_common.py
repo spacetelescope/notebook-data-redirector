@@ -1,4 +1,5 @@
 import json
+import logging
 
 import pytest
 from botocore.exceptions import ClientError
@@ -210,6 +211,14 @@ def test_log_action_no_credential_leak(capture_log):
         "box_rsa_private_key_passphrase",
     ):
         assert secret_field not in output
+
+
+def test_third_party_loggers_suppressed():
+    """boxsdk/urllib3 log at INFO during auth, leaking JWT secrets. Must be WARNING+."""
+    for name in ("boxsdk", "urllib3", "boto3", "botocore"):
+        assert (
+            logging.getLogger(name).level >= logging.WARNING
+        ), f"{name} logger not suppressed — credentials may leak to CloudWatch"
 
 
 def test_webhook_handler_signature_key_without_client(mock_box_infra):
