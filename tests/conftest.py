@@ -42,6 +42,8 @@ os.environ["SECRET_ROLE_ARN"] = SECRET_ROLE_ARN
 os.environ["AWS_DEFAULT_REGION"] = "gl-north-14"
 # Mirrors SAM template; unused until Story 1.3 adds queue-write code.
 os.environ["ENABLE_ASYNC_VALIDATION"] = "true"
+os.environ["VALIDATION_QUEUE_TABLE_NAME"] = "test-validation-queue-table"
+os.environ["SYNC_STATE_TABLE_NAME"] = "test-sync-state-table"
 
 
 @pytest.fixture(autouse=True)
@@ -243,6 +245,21 @@ def mock_ddb_table(ddb_items):
                 result["Item"] = item
             return result
 
+        def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None, ExpressionAttributeNames=None):
+            item = next((i for i in ddb_items if {i[k] for k in Key.keys()} == set(Key.values())), None)
+            if item is None:
+                return
+            # Simple SET-only parser for UpdateExpression
+            if UpdateExpression.startswith("SET "):
+                assignments = UpdateExpression[4:].split(", ")
+                names = ExpressionAttributeNames or {}
+                values = ExpressionAttributeValues or {}
+                for assignment in assignments:
+                    lhs, rhs = assignment.split(" = ")
+                    # Resolve attribute name aliases
+                    attr_name = names.get(lhs, lhs)
+                    item[attr_name] = values[rhs]
+
         def scan(self, ExclusiveStartKey=None):
             if ExclusiveStartKey:
                 start_index = (
@@ -343,3 +360,101 @@ def capture_log():
     root.addHandler(handler)
     yield buf
     root.removeHandler(handler)
+
+
+@pytest.fixture
+def validation_queue_items():
+    return []
+
+
+@pytest.fixture
+def sync_state_items():
+    return []
+
+
+@pytest.fixture
+def mock_validation_queue_table(validation_queue_items):
+    class MockTable:
+        BATCH_SIZE = 5
+
+        def __init__(self):
+            self._snapshot = None
+            self._snapshot_offset = 0
+
+        def put_item(self, Item):
+            self.delete_item({"filepath": Item["filepath"]})
+            validation_queue_items.append(Item)
+
+        def delete_item(self, Key):
+            item = next((i for i in validation_queue_items if {i[k] for k in Key.keys()} == set(Key.values())), None)
+            if item:
+                validation_queue_items.remove(item)
+
+        def get_item(self, Key):
+            result = {}
+            item = next((i for i in validation_queue_items if {i[k] for k in Key.keys()} == set(Key.values())), None)
+            if item:
+                result["Item"] = item
+            return result
+
+        def scan(self, ExclusiveStartKey=None):
+            # Snapshot on first scan, paginate through snapshot (items may be
+            # deleted between pages — real DDB handles this via position markers)
+            if ExclusiveStartKey is None:
+                self._snapshot = list(validation_queue_items)
+                self._snapshot_offset = 0
+
+            start = self._snapshot_offset
+            batch = self._snapshot[start : start + MockTable.BATCH_SIZE]
+            self._snapshot_offset = start + MockTable.BATCH_SIZE
+
+            response = {"Items": batch}
+            if self._snapshot_offset < len(self._snapshot):
+                response["LastEvaluatedKey"] = batch[-1]["filepath"]
+
+            return response
+
+    return MockTable()
+
+
+@pytest.fixture
+def mock_sync_state_table(sync_state_items):
+    class MockTable:
+        def put_item(self, Item):
+            self.delete_item({"sync_id": Item["sync_id"]})
+            sync_state_items.append(Item)
+
+        def delete_item(self, Key):
+            item = next((i for i in sync_state_items if {i[k] for k in Key.keys()} == set(Key.values())), None)
+            if item:
+                sync_state_items.remove(item)
+
+        def get_item(self, Key):
+            result = {}
+            item = next((i for i in sync_state_items if {i[k] for k in Key.keys()} == set(Key.values())), None)
+            if item:
+                result["Item"] = item
+            return result
+
+        def update_item(self, Key, UpdateExpression, ExpressionAttributeValues=None, ExpressionAttributeNames=None):
+            item = next((i for i in sync_state_items if {i[k] for k in Key.keys()} == set(Key.values())), None)
+            if item is None:
+                return
+            if UpdateExpression.startswith("SET "):
+                assignments = UpdateExpression[4:].split(", ")
+                names = ExpressionAttributeNames or {}
+                values = ExpressionAttributeValues or {}
+                for assignment in assignments:
+                    lhs, rhs = assignment.split(" = ")
+                    attr_name = names.get(lhs, lhs)
+                    item[attr_name] = values[rhs]
+
+    return MockTable()
+
+
+@pytest.fixture
+def mock_context():
+    class MockContext:
+        def get_remaining_time_in_millis(self):
+            return 900000  # 15 minutes
+    return MockContext()

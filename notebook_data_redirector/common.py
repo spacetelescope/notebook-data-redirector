@@ -2,8 +2,11 @@ import os
 import json
 import logging
 import time
+from datetime import datetime, timezone
 
 import boto3
+import urllib3
+import urllib3.util
 from boxsdk import Client, JWTAuth
 from boxsdk.exception import BoxAPIException
 from boxsdk.object.webhook import Webhook
@@ -12,6 +15,10 @@ SECRET_ARN = os.environ["SECRET_ARN"]
 MANIFEST_TABLE_NAME = os.environ["MANIFEST_TABLE_NAME"]
 BOX_FOLDER_ID = os.environ["BOX_FOLDER_ID"]
 SECRET_ROLE_ARN = os.environ["SECRET_ROLE_ARN"]
+VALIDATION_QUEUE_TABLE_NAME = os.environ.get("VALIDATION_QUEUE_TABLE_NAME", "")
+SYNC_STATE_TABLE_NAME = os.environ.get("SYNC_STATE_TABLE_NAME", "")
+
+STALE_THRESHOLD_SECONDS = 72000  # 20 hours
 
 
 # --- Structured JSON Logging ---
@@ -71,6 +78,65 @@ def log_action(level, function, action, **kwargs):
     logger = logging.getLogger(function)
     log_func = getattr(logger, level.lower())
     log_func(action, extra={"_structured": extra})
+
+
+# --- HTTP Pool (lazy-init for URL validation) ---
+
+_http = None
+
+
+def _get_http_pool():
+    global _http
+    if _http is None:
+        _http = urllib3.PoolManager(num_pools=1)
+    return _http
+
+
+def validate_download_url(url):
+    """Validate a Box download URL via 1-byte Range GET.
+
+    Returns "valid", "broken", or "uncertain".
+    Caller is responsible for all logging.
+    """
+    try:
+        response = _get_http_pool().request(
+            "GET",
+            url,
+            headers={"Range": "bytes=0-0"},
+            timeout=urllib3.Timeout(connect=5.0, read=5.0),
+            retries=urllib3.util.Retry(redirect=3),
+            preload_content=False,
+        )
+        status = response.status
+        response.release_conn()
+        if status in (206, 200):
+            return "valid"
+        elif status in (403, 404):
+            return "broken"
+        else:
+            return "uncertain"
+    except Exception:
+        return "uncertain"
+
+
+def is_stale(last_validated):
+    """Return True if last_validated is None or older than 20 hours."""
+    if last_validated is None:
+        return True
+    validated_at = datetime.fromisoformat(last_validated).replace(tzinfo=timezone.utc)
+    age_seconds = (datetime.now(timezone.utc) - validated_at).total_seconds()
+    return age_seconds > STALE_THRESHOLD_SECONDS
+
+
+# --- DDB Table Accessors ---
+
+
+def get_validation_queue_table():
+    return boto3.resource("dynamodb").Table(VALIDATION_QUEUE_TABLE_NAME)
+
+
+def get_sync_state_table():
+    return boto3.resource("dynamodb").Table(SYNC_STATE_TABLE_NAME)
 
 
 # --- Box Client Lifecycle (lazy-init + caching) ---
@@ -134,10 +200,11 @@ def _clear_box_client_cache():
 
 def _reset_all_caches():
     """Test-only: clear all module-level caches."""
-    global _cached_secret, _box_client, _box_client_expires_at
+    global _cached_secret, _box_client, _box_client_expires_at, _http
     _cached_secret = None
     _box_client = None
     _box_client_expires_at = 0
+    _http = None
 
 
 def with_box_retry(func, *args, **kwargs):

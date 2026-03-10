@@ -1,10 +1,13 @@
 import json
 import logging
+from datetime import datetime, timezone, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 from botocore.exceptions import ClientError
 import boxsdk
 from boxsdk.exception import BoxAPIException
+import urllib3.exceptions
 
 from . import conftest
 import common
@@ -426,3 +429,87 @@ def test_iterate_files(create_folder, create_file, managed_folder):
     assert set(results_files) == files
 
     # TODO: Test a mix of shared folders
+
+
+class TestValidateDownloadUrl:
+    def _mock_response(self, status):
+        resp = MagicMock()
+        resp.status = status
+        return resp
+
+    def test_valid_on_206(self, monkeypatch):
+        resp = self._mock_response(206)
+        monkeypatch.setattr(common, "_http", MagicMock(**{"request.return_value": resp}))
+        assert common.validate_download_url("https://example.com/file") == "valid"
+        resp.release_conn.assert_called_once()
+
+    def test_valid_on_200(self, monkeypatch):
+        resp = self._mock_response(200)
+        monkeypatch.setattr(common, "_http", MagicMock(**{"request.return_value": resp}))
+        assert common.validate_download_url("https://example.com/file") == "valid"
+        resp.release_conn.assert_called_once()
+
+    def test_broken_on_403(self, monkeypatch):
+        resp = self._mock_response(403)
+        monkeypatch.setattr(common, "_http", MagicMock(**{"request.return_value": resp}))
+        assert common.validate_download_url("https://example.com/file") == "broken"
+
+    def test_broken_on_404(self, monkeypatch):
+        resp = self._mock_response(404)
+        monkeypatch.setattr(common, "_http", MagicMock(**{"request.return_value": resp}))
+        assert common.validate_download_url("https://example.com/file") == "broken"
+
+    def test_uncertain_on_429(self, monkeypatch):
+        resp = self._mock_response(429)
+        monkeypatch.setattr(common, "_http", MagicMock(**{"request.return_value": resp}))
+        assert common.validate_download_url("https://example.com/file") == "uncertain"
+
+    def test_uncertain_on_500(self, monkeypatch):
+        resp = self._mock_response(500)
+        monkeypatch.setattr(common, "_http", MagicMock(**{"request.return_value": resp}))
+        assert common.validate_download_url("https://example.com/file") == "uncertain"
+
+    def test_uncertain_on_timeout(self, monkeypatch):
+        mock_pool = MagicMock()
+        mock_pool.request.side_effect = urllib3.exceptions.TimeoutError()
+        monkeypatch.setattr(common, "_http", mock_pool)
+        assert common.validate_download_url("https://example.com/file") == "uncertain"
+
+    def test_uncertain_on_connection_error(self, monkeypatch):
+        mock_pool = MagicMock()
+        mock_pool.request.side_effect = urllib3.exceptions.HTTPError("connection failed")
+        monkeypatch.setattr(common, "_http", mock_pool)
+        assert common.validate_download_url("https://example.com/file") == "uncertain"
+
+    def test_release_conn_called(self, monkeypatch):
+        resp = self._mock_response(206)
+        monkeypatch.setattr(common, "_http", MagicMock(**{"request.return_value": resp}))
+        common.validate_download_url("https://example.com/file")
+        resp.release_conn.assert_called_once()
+
+    def test_request_parameters(self, monkeypatch):
+        resp = self._mock_response(206)
+        mock_pool = MagicMock(**{"request.return_value": resp})
+        monkeypatch.setattr(common, "_http", mock_pool)
+        common.validate_download_url("https://example.com/file")
+        mock_pool.request.assert_called_once()
+        args, kwargs = mock_pool.request.call_args
+        assert args == ("GET", "https://example.com/file")
+        assert kwargs["headers"] == {"Range": "bytes=0-0"}
+        assert kwargs["preload_content"] is False
+        assert kwargs["timeout"].connect_timeout == 5.0
+        assert kwargs["timeout"].read_timeout == 5.0
+        assert kwargs["retries"].redirect == 3
+
+
+class TestIsStale:
+    def test_none_is_stale(self):
+        assert common.is_stale(None) is True
+
+    def test_old_timestamp_is_stale(self):
+        old = (datetime.now(timezone.utc) - timedelta(hours=21)).isoformat()
+        assert common.is_stale(old) is True
+
+    def test_fresh_timestamp_is_not_stale(self):
+        fresh = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        assert common.is_stale(fresh) is False
