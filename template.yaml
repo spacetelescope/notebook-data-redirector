@@ -40,30 +40,8 @@ Resources:
         Name: filepath
         Type: String
 
-  ValidationQueueTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      AttributeDefinitions:
-        - AttributeName: filepath
-          AttributeType: S
-      KeySchema:
-        - AttributeName: filepath
-          KeyType: HASH
-      BillingMode: PAY_PER_REQUEST
-      TimeToLiveSpecification:
-        AttributeName: expires_at
-        Enabled: true
-
-  SyncStateTable:
-    Type: AWS::DynamoDB::Table
-    Properties:
-      AttributeDefinitions:
-        - AttributeName: sync_id
-          AttributeType: S
-      KeySchema:
-        - AttributeName: sync_id
-          KeyType: HASH
-      BillingMode: PAY_PER_REQUEST
+  # ValidationQueueTable and SyncStateTable are pre-provisioned DynamoDB tables.
+  # Table names are referenced in the function environment variables below.
 
   BoxWebhookFunction:
     Type: AWS::Serverless::Function
@@ -96,8 +74,8 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
-          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTable
-          SYNC_STATE_TABLE_NAME: !Ref SyncStateTable
+          VALIDATION_QUEUE_TABLE_NAME: notebook-data-validation-queue
+          SYNC_STATE_TABLE_NAME: notebook-data-sync-state
       Events:
         DrainQueueEvent:
           Type: Schedule
@@ -126,7 +104,7 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
-          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTable
+          VALIDATION_QUEUE_TABLE_NAME: notebook-data-validation-queue
           ENABLE_ASYNC_VALIDATION: "true"
       Events:
         RedirectorEvent:
