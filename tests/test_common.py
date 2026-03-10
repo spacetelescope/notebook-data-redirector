@@ -1,7 +1,10 @@
 import json
 import logging
+from unittest.mock import MagicMock
 
 import pytest
+import urllib3
+import urllib3.exceptions
 from botocore.exceptions import ClientError
 import boxsdk
 from boxsdk.exception import BoxAPIException
@@ -159,21 +162,6 @@ def test_with_box_retry_401_twice(mock_box_infra):
 
     with pytest.raises(BoxAPIException):
         common.with_box_retry(always_401)
-
-
-@pytest.fixture
-def capture_log():
-    """Capture structured log output via a StringIO handler."""
-    import io
-    import logging
-
-    buf = io.StringIO()
-    handler = logging.StreamHandler(buf)
-    handler.setFormatter(common._JsonFormatter())
-    root = logging.getLogger()
-    root.addHandler(handler)
-    yield buf
-    root.removeHandler(handler)
 
 
 def test_log_action_structured_output(capture_log):
@@ -441,3 +429,86 @@ def test_iterate_files(create_folder, create_file, managed_folder):
     assert set(results_files) == files
 
     # TODO: Test a mix of shared folders
+
+
+# --- validate_download_url tests ---
+# AC #6 (latency < 600ms) is a design target measured via CloudWatch in staging, not unit-testable.
+
+
+@pytest.fixture
+def mock_http_pool(monkeypatch):
+    mock_pool = MagicMock()
+    monkeypatch.setattr(common, "_http", mock_pool)
+    return mock_pool
+
+
+class TestValidateDownloadUrl:
+    def test_returns_true_on_206(self, mock_http_pool):
+        mock_http_pool.request.return_value = MagicMock(status=206)
+        assert common.validate_download_url("https://example.com/file.dat") is True
+
+    def test_returns_true_on_200(self, mock_http_pool):
+        mock_http_pool.request.return_value = MagicMock(status=200)
+        assert common.validate_download_url("https://example.com/file.dat") is True
+
+    def test_returns_false_on_403(self, mock_http_pool, capture_log):
+        mock_http_pool.request.return_value = MagicMock(status=403)
+        assert common.validate_download_url("https://example.com/file.dat") is False
+        log_entry = json.loads(capture_log.getvalue().strip())
+        assert log_entry["action"] == "validate_url_failed"
+        assert log_entry["url_status"] == 403
+
+    def test_returns_false_on_404(self, mock_http_pool, capture_log):
+        mock_http_pool.request.return_value = MagicMock(status=404)
+        assert common.validate_download_url("https://example.com/file.dat") is False
+        log_entry = json.loads(capture_log.getvalue().strip())
+        assert log_entry["action"] == "validate_url_failed"
+        assert log_entry["url_status"] == 404
+
+    def test_returns_true_on_429_degraded(self, mock_http_pool, capture_log):
+        mock_http_pool.request.return_value = MagicMock(status=429)
+        assert common.validate_download_url("https://example.com/file.dat") is True
+        log_entry = json.loads(capture_log.getvalue().strip())
+        assert log_entry["action"] == "validate_url_degraded"
+        assert log_entry["url_status"] == 429
+
+    def test_returns_true_on_500_degraded(self, mock_http_pool, capture_log):
+        mock_http_pool.request.return_value = MagicMock(status=500)
+        assert common.validate_download_url("https://example.com/file.dat") is True
+        log_entry = json.loads(capture_log.getvalue().strip())
+        assert log_entry["action"] == "validate_url_degraded"
+        assert log_entry["url_status"] == 500
+
+    def test_returns_true_on_timeout(self, mock_http_pool, capture_log):
+        mock_http_pool.request.side_effect = urllib3.exceptions.ReadTimeoutError(
+            mock_http_pool, "https://example.com", "Read timed out"
+        )
+        assert common.validate_download_url("https://example.com/file.dat") is True
+        log_entry = json.loads(capture_log.getvalue().strip())
+        assert log_entry["action"] == "validate_url_degraded"
+        assert log_entry["error_type"] == "connection_error"
+
+    def test_returns_true_on_connection_error(self, mock_http_pool, capture_log):
+        mock_http_pool.request.side_effect = urllib3.exceptions.NewConnectionError(None, "Connection failed")
+        assert common.validate_download_url("https://example.com/file.dat") is True
+        log_entry = json.loads(capture_log.getvalue().strip())
+        assert log_entry["action"] == "validate_url_degraded"
+        assert log_entry["error_type"] == "connection_error"
+
+    def test_sends_range_header(self, mock_http_pool):
+        mock_http_pool.request.return_value = MagicMock(status=206)
+        common.validate_download_url("https://example.com/file.dat")
+        call_kwargs = mock_http_pool.request.call_args
+        assert call_kwargs.kwargs["headers"] == {"Range": "bytes=0-0"}
+        assert call_kwargs.kwargs["preload_content"] is False
+
+    def test_releases_connection(self, mock_http_pool):
+        mock_response = MagicMock(status=206)
+        mock_http_pool.request.return_value = mock_response
+        common.validate_download_url("https://example.com/file.dat")
+        mock_response.release_conn.assert_called_once()
+
+    def test_get_http_pool_creates_pool_manager(self, monkeypatch):
+        monkeypatch.setattr(common, "_http", None)
+        pool = common._get_http_pool()
+        assert isinstance(pool, urllib3.PoolManager)

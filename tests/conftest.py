@@ -40,6 +40,7 @@ os.environ["BOX_FOLDER_ID"] = SHARED_BOX_FOLDER_ID
 os.environ["MANIFEST_TABLE_NAME"] = MANIFEST_TABLE_NAME
 os.environ["SECRET_ROLE_ARN"] = SECRET_ROLE_ARN
 os.environ["AWS_DEFAULT_REGION"] = "gl-north-14"
+os.environ["ENABLE_URL_VALIDATION"] = "true"
 
 
 @pytest.fixture(autouse=True)
@@ -325,3 +326,19 @@ def _get_path_collection(parent_folder):
         }
     ]
     return {"total_count": total_count, "entries": entries}
+
+
+@pytest.fixture
+def capture_log():
+    """Capture structured log output via a StringIO handler."""
+    import io
+    import logging
+    import common
+
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(common._JsonFormatter())
+    root = logging.getLogger()
+    root.addHandler(handler)
+    yield buf
+    root.removeHandler(handler)

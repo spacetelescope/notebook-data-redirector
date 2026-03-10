@@ -3,6 +3,9 @@ import json
 import logging
 import time
 
+import urllib3
+import urllib3.util
+
 import boto3
 from boxsdk import Client, JWTAuth
 from boxsdk.exception import BoxAPIException
@@ -73,6 +76,55 @@ def log_action(level, function, action, **kwargs):
     log_func(action, extra={"_structured": extra})
 
 
+# --- URL Validation (hot-path, no Box SDK) ---
+
+_http = None
+
+
+def _get_http_pool():
+    global _http
+    if _http is None:
+        _http = urllib3.PoolManager(num_pools=1)
+    return _http
+
+
+def validate_download_url(url):
+    """Validate a Box download URL via 1-byte Range GET.
+
+    Returns True if URL appears valid or validation is uncertain.
+    Returns False only for definitive failures (403, 404).
+    """
+    try:
+        response = _get_http_pool().request(
+            "GET",
+            url,
+            headers={"Range": "bytes=0-0"},
+            timeout=urllib3.Timeout(connect=1.0, read=1.0),
+            retries=urllib3.util.Retry(redirect=3),
+            preload_content=False,
+        )
+        try:
+            if response.status in (206, 200):
+                return True
+            elif response.status in (403, 404):
+                log_action("WARNING", "common", "validate_url_failed", url_status=response.status)
+                return False
+            else:
+                # 429, 5xx, anything unexpected — assume valid
+                log_action(
+                    "WARNING",
+                    "common",
+                    "validate_url_degraded",
+                    url_status=response.status,
+                )
+                return True
+        finally:
+            response.release_conn()
+    except Exception:
+        log_action("WARNING", "common", "validate_url_degraded", error_type="connection_error")
+        return True
+
+
 # --- Box Client Lifecycle (lazy-init + caching) ---
 
 _cached_secret = None
@@ -134,10 +186,11 @@ def _clear_box_client_cache():
 
 def _reset_all_caches():
     """Test-only: clear all module-level caches."""
-    global _cached_secret, _box_client, _box_client_expires_at
+    global _cached_secret, _box_client, _box_client_expires_at, _http
     _cached_secret = None
     _box_client = None
     _box_client_expires_at = 0
+    _http = None
 
 
 def with_box_retry(func, *args, **kwargs):
