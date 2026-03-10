@@ -21,6 +21,37 @@ def lambda_handler(event, context):
         return
 
 
+def _repair_broken_url(filepath, manifest_item, manifest_table):
+    """Attempt to repair a broken Box download URL.
+
+    Returns "repaired", "deleted", or "failed".
+    """
+    try:
+        client = common.get_box_client()
+        box_file_id = manifest_item["box_file_id"]
+        file = common.with_box_retry(common.get_file, client, box_file_id)
+
+        if file is None:
+            manifest_table.delete_item(Key={"filepath": filepath})
+            common.log_action("WARNING", "sync", "file_not_found",
+                              filepath=filepath, box_file_id=box_file_id)
+            return "deleted"
+
+        file = common.with_box_retry(common.create_shared_link, client, file, access="open", allow_download=True)
+        item = common.make_ddb_item(file)
+        item["last_validated"] = datetime.now(timezone.utc).isoformat()
+        manifest_table.put_item(Item=item)
+
+        common.log_action("INFO", "sync", "drain_repair_success",
+                          filepath=filepath, box_file_id=box_file_id)
+        return "repaired"
+    except Exception as e:
+        common.log_action("WARNING", "sync", "drain_repair_failed",
+                          filepath=filepath, box_file_id=manifest_item.get("box_file_id"),
+                          error_type=type(e).__name__)
+        return "failed"
+
+
 def _drain_queue(context):
     queue_table = common.get_validation_queue_table()
     manifest_table = common.get_ddb_table()
@@ -34,11 +65,13 @@ def _drain_queue(context):
         "status": "running",
         "started_at": datetime.now(timezone.utc).isoformat(),
         "items_checked": 0,
+        "items_valid": 0,
         "items_repaired": 0,
     })
 
     items_checked = 0
     items_valid = 0
+    items_repaired = 0
 
     # Scan queue (handle paging)
     scan_response = queue_table.scan()
@@ -82,8 +115,10 @@ def _drain_queue(context):
                 items_valid += 1
                 common.log_action("INFO", "sync", "drain_validate_valid", filepath=filepath)
             elif result == "broken":
-                # Story 1.3 will add repair here
                 common.log_action("WARNING", "sync", "drain_validate_broken", filepath=filepath)
+                repair_result = _repair_broken_url(filepath, manifest_item, manifest_table)
+                if repair_result == "repaired":
+                    items_repaired += 1
             else:
                 common.log_action("WARNING", "sync", "drain_validate_uncertain", filepath=filepath)
 
@@ -102,13 +137,14 @@ def _drain_queue(context):
     # Update sync state
     sync_state_table.update_item(
         Key={"sync_id": sync_id},
-        UpdateExpression="SET #s = :status, completed_at = :ts, items_checked = :checked, items_valid = :valid",
+        UpdateExpression="SET #s = :status, completed_at = :ts, items_checked = :checked, items_valid = :valid, items_repaired = :repaired",
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={
             ":status": "completed",
             ":ts": datetime.now(timezone.utc).isoformat(),
             ":checked": items_checked,
             ":valid": items_valid,
+            ":repaired": items_repaired,
         },
     )
 

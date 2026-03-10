@@ -3,6 +3,7 @@ from datetime import datetime, timezone, timedelta
 from unittest.mock import MagicMock
 
 import pytest
+from boxsdk.exception import BoxAPIException
 
 import common
 import sync
@@ -178,7 +179,7 @@ class TestDrainQueue:
         actions = [json.loads(line)["action"] for line in log_lines]
         assert "drain_validate_orphaned_queue_item" in actions
 
-    def test_does_not_stamp_broken_urls(self, monkeypatch, ddb_items,
+    def test_broken_url_triggers_repair(self, monkeypatch, ddb_items,
                                         validation_queue_items, sync_state_items,
                                         mock_context, capture_log):
         ddb_items.append({"filepath": "data/broken.fits", "box_file_id": "333",
@@ -186,14 +187,22 @@ class TestDrainQueue:
         validation_queue_items.append({"filepath": "data/broken.fits",
                                        "download_url": "https://box.com/dl/broken"})
         monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+        # Mock Box client — repair fails so manifest stays unchanged
+        monkeypatch.setattr(common, "get_box_client", lambda: MagicMock())
+
+        def raise_error(func, *a, **kw):
+            raise ConnectionError("network failure")
+        monkeypatch.setattr(common, "with_box_retry", raise_error)
 
         sync.lambda_handler({"mode": "drain-queue"}, mock_context)
 
+        # Repair failed, so no last_validated stamp
         assert "last_validated" not in ddb_items[0]
         assert len(validation_queue_items) == 0
         log_lines = capture_log.getvalue().strip().split("\n")
         actions = [json.loads(line)["action"] for line in log_lines]
         assert "drain_validate_broken" in actions
+        assert "drain_repair_failed" in actions
 
     def test_does_not_stamp_uncertain_results(self, monkeypatch, ddb_items,
                                               validation_queue_items, sync_state_items,
@@ -215,19 +224,22 @@ class TestDrainQueue:
     def test_deletes_queue_items_all_outcomes(self, monkeypatch, ddb_items,
                                               validation_queue_items, sync_state_items,
                                               mock_context):
-        outcomes = ["valid", "broken", "uncertain"]
-        for i, outcome in enumerate(outcomes):
+        outcomes = {"valid": 0, "broken": 1, "uncertain": 2}
+        for outcome, i in outcomes.items():
             ddb_items.append({"filepath": f"data/file{i}.fits", "box_file_id": str(i),
                               "download_url": f"https://box.com/dl/{i}"})
             validation_queue_items.append({"filepath": f"data/file{i}.fits",
                                            "download_url": f"https://box.com/dl/{i}"})
 
-        call_count = {"value": 0}
-        def rotating_validate(url):
-            idx = call_count["value"]
-            call_count["value"] += 1
-            return outcomes[idx]
-        monkeypatch.setattr(common, "validate_download_url", rotating_validate)
+        url_outcomes = {f"https://box.com/dl/{i}": outcome for outcome, i in outcomes.items()}
+        monkeypatch.setattr(common, "validate_download_url",
+                            lambda url: url_outcomes[url])
+        # Broken path now triggers repair — mock Box client to let it fail gracefully
+        monkeypatch.setattr(common, "get_box_client", lambda: MagicMock())
+
+        def raise_error(func, *a, **kw):
+            raise ConnectionError("network failure")
+        monkeypatch.setattr(common, "with_box_retry", raise_error)
 
         sync.lambda_handler({"mode": "drain-queue"}, mock_context)
 
@@ -323,3 +335,270 @@ class TestDrainQueue:
         # All 7 items should have last_validated stamped
         for item in ddb_items:
             assert "last_validated" in item
+
+
+class TestRepairBrokenUrl:
+    """Unit tests for sync._repair_broken_url() in isolation."""
+
+    @pytest.fixture
+    def data_folder(self, create_folder, managed_folder):
+        return create_folder(parent_folder=managed_folder, name="data")
+
+    @pytest.fixture
+    def manifest_item(self):
+        return {"filepath": "data/broken.fits", "box_file_id": "111",
+                "download_url": "https://box.com/dl/old"}
+
+    @pytest.fixture
+    def mock_repaired_file(self, create_shared_file, data_folder):
+        return create_shared_file(parent_folder=data_folder, id="111",
+                                  name="broken.fits")
+
+    def test_successful_repair(self, monkeypatch, mock_ddb_table, ddb_items,
+                                manifest_item, mock_repaired_file, mock_box_client,
+                                capture_log):
+        ddb_items.append(manifest_item)
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        result = sync._repair_broken_url("data/broken.fits", manifest_item, mock_ddb_table)
+
+        assert result == "repaired"
+        assert len(ddb_items) == 1
+        assert "last_validated" in ddb_items[0]
+        assert ddb_items[0]["box_file_id"] == "111"
+        assert ddb_items[0]["download_url"] == mock_repaired_file.shared_link["download_url"]
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "drain_repair_success" in actions
+
+    def test_file_not_found_deletes_manifest(self, monkeypatch, mock_ddb_table,
+                                              ddb_items, manifest_item, capture_log):
+        ddb_items.append(manifest_item)
+        monkeypatch.setattr(common, "get_box_client", lambda: MagicMock())
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+        monkeypatch.setattr(common, "get_file", lambda client, fid: None)
+
+        result = sync._repair_broken_url("data/broken.fits", manifest_item, mock_ddb_table)
+
+        assert result == "deleted"
+        assert len(ddb_items) == 0
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "file_not_found" in actions
+
+    def test_repair_failure_returns_failed(self, monkeypatch, mock_ddb_table,
+                                           ddb_items, manifest_item, capture_log):
+        ddb_items.append(manifest_item)
+        monkeypatch.setattr(common, "get_box_client", lambda: MagicMock())
+
+        def raise_error(func, *a, **kw):
+            raise ConnectionError("network failure")
+        monkeypatch.setattr(common, "with_box_retry", raise_error)
+
+        result = sync._repair_broken_url("data/broken.fits", manifest_item, mock_ddb_table)
+
+        assert result == "failed"
+        assert len(ddb_items) == 1
+        assert "last_validated" not in ddb_items[0]
+        log_lines = capture_log.getvalue().strip().split("\n")
+        entries = [json.loads(line) for line in log_lines]
+        assert any(e["action"] == "drain_repair_failed" and e["error_type"] == "ConnectionError"
+                    for e in entries)
+
+    def test_uses_with_box_retry(self, monkeypatch, mock_ddb_table, ddb_items,
+                                  manifest_item, mock_repaired_file, mock_box_client):
+        ddb_items.append(manifest_item)
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+
+        retry_calls = []
+
+        def spy_retry(func, *args, **kwargs):
+            retry_calls.append(func)
+            return func(*args, **kwargs)
+        monkeypatch.setattr(common, "with_box_retry", spy_retry)
+
+        sync._repair_broken_url("data/broken.fits", manifest_item, mock_ddb_table)
+
+        assert len(retry_calls) == 2
+        assert retry_calls[0] is common.get_file
+        assert retry_calls[1] is common.create_shared_link
+
+    def test_create_shared_link_failure(self, monkeypatch, mock_ddb_table,
+                                        ddb_items, manifest_item, capture_log,
+                                        create_file, data_folder):
+        ddb_items.append(manifest_item)
+        create_file(parent_folder=data_folder, id="111", name="broken.fits")
+        monkeypatch.setattr(common, "get_box_client", lambda: MagicMock())
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        def fail_shared_link(client, file, **kwargs):
+            raise BoxAPIException(500, message="internal error")
+        monkeypatch.setattr(common, "create_shared_link", fail_shared_link)
+
+        result = sync._repair_broken_url("data/broken.fits", manifest_item, mock_ddb_table)
+
+        assert result == "failed"
+        assert len(ddb_items) == 1
+        assert "last_validated" not in ddb_items[0]
+
+
+class TestDrainQueueWithRepair:
+    """Integration tests for drain-queue triggering repair on broken URLs."""
+
+    @pytest.fixture(autouse=True)
+    def setup_drain(self, monkeypatch, mock_ddb_table, mock_validation_queue_table,
+                    mock_sync_state_table):
+        monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
+        monkeypatch.setattr(common, "get_validation_queue_table", lambda: mock_validation_queue_table)
+        monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
+
+    @pytest.fixture
+    def data_folder(self, create_folder, managed_folder):
+        return create_folder(parent_folder=managed_folder, name="data")
+
+    def test_broken_url_triggers_repair_and_updates_manifest(
+            self, monkeypatch, ddb_items, validation_queue_items,
+            sync_state_items, mock_context, capture_log,
+            create_shared_file, data_folder, mock_box_client):
+        ddb_items.append({"filepath": "data/repair.fits", "box_file_id": "111",
+                          "download_url": "https://box.com/dl/old"})
+        validation_queue_items.append({"filepath": "data/repair.fits",
+                                       "download_url": "https://box.com/dl/old"})
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+
+        repaired_file = create_shared_file(parent_folder=data_folder, id="111",
+                                            name="repair.fits")
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        sync.lambda_handler({"mode": "drain-queue"}, mock_context)
+
+        assert len(ddb_items) == 1
+        assert "last_validated" in ddb_items[0]
+        assert ddb_items[0]["download_url"] == repaired_file.shared_link["download_url"]
+        assert len(validation_queue_items) == 0
+
+    def test_broken_url_file_gone_deletes_manifest(
+            self, monkeypatch, ddb_items, validation_queue_items,
+            sync_state_items, mock_context, capture_log):
+        ddb_items.append({"filepath": "data/gone.fits", "box_file_id": "999",
+                          "download_url": "https://box.com/dl/gone"})
+        validation_queue_items.append({"filepath": "data/gone.fits",
+                                       "download_url": "https://box.com/dl/gone"})
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+        monkeypatch.setattr(common, "get_box_client", lambda: MagicMock())
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+        monkeypatch.setattr(common, "get_file", lambda client, fid: None)
+
+        sync.lambda_handler({"mode": "drain-queue"}, mock_context)
+
+        assert len(ddb_items) == 0
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "file_not_found" in actions
+
+    def test_broken_url_repair_fails_no_stamp(
+            self, monkeypatch, ddb_items, validation_queue_items,
+            sync_state_items, mock_context, capture_log):
+        ddb_items.append({"filepath": "data/fail.fits", "box_file_id": "888",
+                          "download_url": "https://box.com/dl/fail"})
+        validation_queue_items.append({"filepath": "data/fail.fits",
+                                       "download_url": "https://box.com/dl/fail"})
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+        monkeypatch.setattr(common, "get_box_client", lambda: MagicMock())
+
+        def raise_error(func, *a, **kw):
+            raise ConnectionError("network failure")
+        monkeypatch.setattr(common, "with_box_retry", raise_error)
+
+        sync.lambda_handler({"mode": "drain-queue"}, mock_context)
+
+        assert len(ddb_items) == 1
+        assert "last_validated" not in ddb_items[0]
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "drain_repair_failed" in actions
+
+    def test_items_repaired_counter_in_sync_state(
+            self, monkeypatch, ddb_items, validation_queue_items,
+            sync_state_items, mock_context,
+            create_shared_file, data_folder, mock_box_client):
+        ddb_items.append({"filepath": "data/fix.fits", "box_file_id": "777",
+                          "download_url": "https://box.com/dl/fix"})
+        validation_queue_items.append({"filepath": "data/fix.fits",
+                                       "download_url": "https://box.com/dl/fix"})
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+
+        create_shared_file(parent_folder=data_folder, id="777", name="fix.fits")
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        sync.lambda_handler({"mode": "drain-queue"}, mock_context)
+
+        assert sync_state_items[0]["items_repaired"] == 1
+
+    def test_mixed_outcomes_in_drain_run(
+            self, monkeypatch, ddb_items, validation_queue_items,
+            sync_state_items, mock_context, capture_log,
+            create_shared_file, data_folder, mock_box_client):
+        # valid item
+        ddb_items.append({"filepath": "data/ok.fits", "box_file_id": "100",
+                          "download_url": "https://box.com/dl/ok"})
+        validation_queue_items.append({"filepath": "data/ok.fits",
+                                       "download_url": "https://box.com/dl/ok"})
+        # broken → repaired
+        ddb_items.append({"filepath": "data/fix.fits", "box_file_id": "200",
+                          "download_url": "https://box.com/dl/fix"})
+        validation_queue_items.append({"filepath": "data/fix.fits",
+                                       "download_url": "https://box.com/dl/fix"})
+        create_shared_file(parent_folder=data_folder, id="200", name="fix.fits")
+        # broken → deleted (file gone from Box)
+        ddb_items.append({"filepath": "data/gone.fits", "box_file_id": "300",
+                          "download_url": "https://box.com/dl/gone"})
+        validation_queue_items.append({"filepath": "data/gone.fits",
+                                       "download_url": "https://box.com/dl/gone"})
+        # uncertain
+        ddb_items.append({"filepath": "data/maybe.fits", "box_file_id": "400",
+                          "download_url": "https://box.com/dl/maybe"})
+        validation_queue_items.append({"filepath": "data/maybe.fits",
+                                       "download_url": "https://box.com/dl/maybe"})
+
+        url_outcomes = {
+            "https://box.com/dl/ok": "valid",
+            "https://box.com/dl/fix": "broken",
+            "https://box.com/dl/gone": "broken",
+            "https://box.com/dl/maybe": "uncertain",
+        }
+        monkeypatch.setattr(common, "validate_download_url",
+                            lambda url: url_outcomes[url])
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+        # get_file returns None for id "300" (gone), real lookup otherwise
+        original_get_file = common.get_file
+
+        def selective_get_file(client, fid):
+            if fid == "300":
+                return None
+            return original_get_file(client, fid)
+        monkeypatch.setattr(common, "get_file", selective_get_file)
+
+        sync.lambda_handler({"mode": "drain-queue"}, mock_context)
+
+        assert len(validation_queue_items) == 0
+        assert sync_state_items[0]["items_checked"] == 4
+        assert sync_state_items[0]["items_valid"] == 1
+        assert sync_state_items[0]["items_repaired"] == 1
+        # "gone.fits" should be deleted from manifest
+        filepaths = {item["filepath"] for item in ddb_items}
+        assert "data/gone.fits" not in filepaths
+        # "maybe.fits" should be unchanged (no last_validated)
+        maybe_item = next(i for i in ddb_items if i["filepath"] == "data/maybe.fits")
+        assert "last_validated" not in maybe_item
