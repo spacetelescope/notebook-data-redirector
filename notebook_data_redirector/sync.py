@@ -2,6 +2,24 @@ import common
 
 
 def lambda_handler(event, context):
+    mode = event.get("mode", "drain-queue")
+    common.log_action("INFO", "sync", "sync_start", mode=mode)
+
+    if mode == "full-sync":
+        _full_sync()
+        return
+    elif mode == "drain-queue":
+        common.log_action("INFO", "sync", "mode_not_implemented", mode=mode)
+        return
+    elif mode == "reconciliation":
+        common.log_action("INFO", "sync", "mode_not_implemented", mode=mode)
+        return
+    else:
+        common.log_action("WARNING", "sync", "unknown_mode", mode=mode)
+        return
+
+
+def _full_sync():
     ddb_table = common.get_ddb_table()
     box_client = common.get_box_client()
     root_folder = common.get_folder(box_client, common.BOX_FOLDER_ID)

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 import common
@@ -11,7 +13,7 @@ class TestSync:
         monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
 
     def test_sync_empty(self, ddb_items):
-        sync.lambda_handler({}, None)
+        sync.lambda_handler({"mode": "full-sync"}, None)
         assert len(ddb_items) == 0
 
     def test_sync(
@@ -60,7 +62,7 @@ class TestSync:
         unshared_folder = create_folder(parent=managed_folder)
         shared_file = create_shared_file(parent=unshared_folder)
 
-        sync.lambda_handler({}, None)
+        sync.lambda_handler({"mode": "full-sync"}, None)
 
         assert len(ddb_items) == 3
         file_ids = {i["box_file_id"] for i in ddb_items}
@@ -77,6 +79,34 @@ class TestSync:
                 }
             )
 
-        sync.lambda_handler({}, None)
+        sync.lambda_handler({"mode": "full-sync"}, None)
 
         assert len(ddb_items) == 0
+
+
+class TestSyncModeDispatch:
+    def test_drain_queue_mode_stub(self, capture_log):
+        sync.lambda_handler({"mode": "drain-queue"}, None)
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "mode_not_implemented" in actions
+
+    def test_reconciliation_mode_stub(self, capture_log):
+        sync.lambda_handler({"mode": "reconciliation"}, None)
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "mode_not_implemented" in actions
+
+    def test_default_mode(self, capture_log):
+        sync.lambda_handler({}, None)
+        log_lines = capture_log.getvalue().strip().split("\n")
+        entries = [json.loads(line) for line in log_lines]
+        # Default should be drain-queue
+        assert any(e.get("mode") == "drain-queue" for e in entries)
+        assert any(e["action"] == "mode_not_implemented" for e in entries)
+
+    def test_unknown_mode(self, capture_log):
+        sync.lambda_handler({"mode": "bogus"}, None)
+        log_lines = capture_log.getvalue().strip().split("\n")
+        entries = [json.loads(line) for line in log_lines]
+        assert any(e["action"] == "unknown_mode" for e in entries)

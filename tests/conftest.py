@@ -40,7 +40,8 @@ os.environ["BOX_FOLDER_ID"] = SHARED_BOX_FOLDER_ID
 os.environ["MANIFEST_TABLE_NAME"] = MANIFEST_TABLE_NAME
 os.environ["SECRET_ROLE_ARN"] = SECRET_ROLE_ARN
 os.environ["AWS_DEFAULT_REGION"] = "gl-north-14"
-os.environ["ENABLE_URL_VALIDATION"] = "true"
+# Mirrors SAM template; unused until Story 1.3 adds queue-write code.
+os.environ["ENABLE_ASYNC_VALIDATION"] = "true"
 
 
 @pytest.fixture(autouse=True)

@@ -40,6 +40,31 @@ Resources:
         Name: filepath
         Type: String
 
+  ValidationQueueTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: filepath
+          AttributeType: S
+      KeySchema:
+        - AttributeName: filepath
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  SyncStateTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: sync_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: sync_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+
   BoxWebhookFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -71,25 +96,38 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
+          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTable
+          SYNC_STATE_TABLE_NAME: !Ref SyncStateTable
       Events:
-        SyncFunctionEvent:
+        DrainQueueEvent:
           Type: Schedule
           Properties:
-            # Run once daily at 6:00 AM UTC
+            Schedule: rate(1 hour)
+            Input: '{"mode": "drain-queue"}'
+        ReconciliationEvent:
+          Type: Schedule
+          Properties:
             Schedule: cron(0 6 * * ? *)
+            Input: '{"mode": "reconciliation"}'
+        FullSyncEvent:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 3 ? * SUN *)
+            Input: '{"mode": "full-sync"}'
 
   RedirectorFunction:
     Type: AWS::Serverless::Function
     Properties:
       MemorySize: 128
-      # DynamoDB read + URL validation Range GET; increased from 15 for future cold-path repairs (Story 1.3+).
+      # DynamoDB read + conditional queue write; 30s budget for cold starts.
       Timeout: 30
       Handler: redirector.lambda_handler
       Role: !Ref LambdaRoleARN
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
-          ENABLE_URL_VALIDATION: "true"
+          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTable
+          ENABLE_ASYNC_VALIDATION: "true"
       Events:
         RedirectorEvent:
           Type: Api
