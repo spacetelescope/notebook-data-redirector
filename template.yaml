@@ -18,26 +18,6 @@ Parameters:
   SecretRoleARN:
     Type: String
     Description: ARN of the role to assume to retrieve the secret
-  ValidationQueueTableName:
-    Type: String
-    Description: Name of the pre-provisioned DynamoDB validation queue table
-    Default: notebook-data-validation-queue
-  SyncStateTableName:
-    Type: String
-    Description: Name of the pre-provisioned DynamoDB sync state table
-    Default: notebook-data-sync-state
-  FolderCacheTableName:
-    Type: String
-    Description: Name of the pre-provisioned DynamoDB folder cache table
-    Default: notebook-data-folder-cache
-  EventDedupTableName:
-    Type: String
-    Description: Name of the pre-provisioned DynamoDB event dedup table
-    Default: notebook-data-event-dedup
-  WebhookQueueTableName:
-    Type: String
-    Description: Name of the pre-provisioned DynamoDB webhook queue table
-    Default: notebook-data-webhook-queue
   ServiceAccountUserId:
     Type: String
     Description: Box service account user ID
@@ -59,14 +39,99 @@ Resources:
   ManifestTable:
     Type: AWS::Serverless::SimpleTable
     DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
     Properties:
       PrimaryKey:
         Name: filepath
         Type: String
+      SSESpecification:
+        SSEEnabled: true
 
-  # ValidationQueueTable, SyncStateTable, FolderCacheTable, EventDedupTable, and
-  # WebhookQueueTable are pre-provisioned DynamoDB tables (created via AWS CLI/SSO).
-  # Table names are referenced in the function environment variables below.
+  ValidationQueueTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: filepath
+          AttributeType: S
+      KeySchema:
+        - AttributeName: filepath
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  SyncStateTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: sync_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: sync_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+
+  FolderCacheTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: folder_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: folder_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+
+  EventDedupTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: event_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: event_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+
+  WebhookQueueTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      AttributeDefinitions:
+        - AttributeName: work_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: work_id
+          KeyType: HASH
+      BillingMode: PAY_PER_REQUEST
+      SSESpecification:
+        SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
 
   BoxWebhookFunction:
     Type: AWS::Serverless::Function
@@ -79,8 +144,8 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
-          EVENT_DEDUP_TABLE_NAME: !Ref EventDedupTableName
-          WEBHOOK_QUEUE_TABLE_NAME: !Ref WebhookQueueTableName
+          EVENT_DEDUP_TABLE_NAME: !Ref EventDedupTable
+          WEBHOOK_QUEUE_TABLE_NAME: !Ref WebhookQueueTable
           SERVICE_ACCOUNT_USER_ID: !Ref ServiceAccountUserId
       Events:
         BoxWebhookEvent:
@@ -102,9 +167,9 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
-          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTableName
-          SYNC_STATE_TABLE_NAME: !Ref SyncStateTableName
-          FOLDER_CACHE_TABLE_NAME: !Ref FolderCacheTableName
+          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTable
+          SYNC_STATE_TABLE_NAME: !Ref SyncStateTable
+          FOLDER_CACHE_TABLE_NAME: !Ref FolderCacheTable
       Events:
         DrainQueueEvent:
           Type: Schedule
@@ -122,8 +187,6 @@ Resources:
             Schedule: cron(0 3 ? * SUN *)
             Input: '{"mode": "full-sync"}'
 
-  # WebhookWorkerFunction's DDB Streams event source mapping is pre-provisioned
-  # via CLI/SSO, same as the DynamoDB tables above.
   WebhookWorkerFunction:
     Type: AWS::Serverless::Function
     Properties:
@@ -135,9 +198,16 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
-          FOLDER_CACHE_TABLE_NAME: !Ref FolderCacheTableName
-          WEBHOOK_QUEUE_TABLE_NAME: !Ref WebhookQueueTableName
+          FOLDER_CACHE_TABLE_NAME: !Ref FolderCacheTable
+          WEBHOOK_QUEUE_TABLE_NAME: !Ref WebhookQueueTable
           SERVICE_ACCOUNT_USER_ID: !Ref ServiceAccountUserId
+      Events:
+        WebhookQueueStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt WebhookQueueTable.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 10
 
   RedirectorFunction:
     Type: AWS::Serverless::Function
@@ -150,7 +220,7 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
-          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTableName
+          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTable
           ENABLE_ASYNC_VALIDATION: "true"
       Events:
         RedirectorEvent:
