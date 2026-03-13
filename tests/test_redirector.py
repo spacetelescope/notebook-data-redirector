@@ -1,4 +1,6 @@
+import json
 import urllib.parse
+from unittest.mock import patch
 
 import pytest
 
@@ -22,6 +24,23 @@ class TestRedirector:
         event = create_redirector_event("some/bogus/path.dat")
         result = redirector.lambda_handler(event, None)
         assert result["statusCode"] == 404
+        assert result["headers"]["Content-Type"] == "application/json"
+        body = json.loads(result["body"])
+        assert body == {"error": "file_not_found", "filepath": "some/bogus/path.dat"}
+
+    def test_missing_path_no_box_calls(self, create_redirector_event):
+        event = create_redirector_event("some/bogus/path.dat")
+        with patch.object(common, "get_box_client") as mock_box:
+            result = redirector.lambda_handler(event, None)
+        assert result["statusCode"] == 404
+        mock_box.assert_not_called()
+
+    def test_missing_path_no_queue_writes(self, mock_ddb_table, create_redirector_event):
+        event = create_redirector_event("some/bogus/path.dat")
+        with patch.object(mock_ddb_table, "put_item", wraps=mock_ddb_table.put_item) as spy:
+            result = redirector.lambda_handler(event, None)
+        assert result["statusCode"] == 404
+        spy.assert_not_called()
 
     @pytest.mark.parametrize("filename", ["normal-file.dat", "file with spaces.dat"])
     def test_redirect_path(

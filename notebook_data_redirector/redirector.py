@@ -1,3 +1,4 @@
+import json
 import urllib.parse
 
 import common
@@ -12,8 +13,12 @@ def lambda_handler(event, context):
     download_url = common.get_download_url(ddb_table, filepath)
 
     if download_url is None:
-        common.log_action("INFO", "redirector", "not_found", filepath=filepath)
-        return {"statusCode": 404}
+        common.log_action("INFO", "redirector", "ddb_miss", filepath=filepath)
+        return {
+            "statusCode": 404,
+            "headers": {"Content-Type": "application/json"},
+            "body": json.dumps({"error": "file_not_found", "filepath": filepath}),
+        }
 
     common.log_action("INFO", "redirector", "redirect", filepath=filepath)
     return {"statusCode": 302, "headers": {"Location": download_url}}
