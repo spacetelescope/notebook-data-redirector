@@ -17,6 +17,10 @@ BOX_FOLDER_ID = os.environ["BOX_FOLDER_ID"]
 SECRET_ROLE_ARN = os.environ["SECRET_ROLE_ARN"]
 VALIDATION_QUEUE_TABLE_NAME = os.environ.get("VALIDATION_QUEUE_TABLE_NAME", "")
 SYNC_STATE_TABLE_NAME = os.environ.get("SYNC_STATE_TABLE_NAME", "")
+FOLDER_CACHE_TABLE_NAME = os.environ.get("FOLDER_CACHE_TABLE_NAME", "")
+EVENT_DEDUP_TABLE_NAME = os.environ.get("EVENT_DEDUP_TABLE_NAME", "")
+WEBHOOK_QUEUE_TABLE_NAME = os.environ.get("WEBHOOK_QUEUE_TABLE_NAME", "")
+SERVICE_ACCOUNT_USER_ID = os.environ.get("SERVICE_ACCOUNT_USER_ID", "")
 
 STALE_THRESHOLD_SECONDS = 72000  # 20 hours
 FOLDER_CACHE_TTL = 300  # 5 minutes
@@ -144,6 +148,18 @@ def get_sync_state_table():
     return boto3.resource("dynamodb").Table(SYNC_STATE_TABLE_NAME)
 
 
+def get_folder_cache_table():
+    return boto3.resource("dynamodb").Table(FOLDER_CACHE_TABLE_NAME)
+
+
+def get_event_dedup_table():
+    return boto3.resource("dynamodb").Table(EVENT_DEDUP_TABLE_NAME)
+
+
+def get_webhook_queue_table():
+    return boto3.resource("dynamodb").Table(WEBHOOK_QUEUE_TABLE_NAME)
+
+
 # --- Box Client Lifecycle (lazy-init + caching) ---
 
 _cached_secret = None
@@ -243,6 +259,10 @@ HANDLED_FILE_TRIGGERS = {
     "FILE.TRASHED",
     "FILE.RESTORED",
     "FILE.MOVED",
+    "FILE.RENAMED",
+    "FILE.DELETED",
+    "FILE.UPLOADED",
+    "FILE.COPIED",
 }
 
 HANDLED_FOLDER_TRIGGERS = {
@@ -252,6 +272,9 @@ HANDLED_FOLDER_TRIGGERS = {
     "FOLDER.RESTORED",
     "FOLDER.TRASHED",
     "FOLDER.MOVED",
+    "FOLDER.RENAMED",
+    "FOLDER.DELETED",
+    "FOLDER.COPIED",
 }
 
 HANDLED_TRIGGERS = HANDLED_FILE_TRIGGERS | HANDLED_FOLDER_TRIGGERS

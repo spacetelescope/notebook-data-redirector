@@ -26,6 +26,21 @@ Parameters:
     Type: String
     Description: Name of the pre-provisioned DynamoDB sync state table
     Default: notebook-data-sync-state
+  FolderCacheTableName:
+    Type: String
+    Description: Name of the pre-provisioned DynamoDB folder cache table
+    Default: notebook-data-folder-cache
+  EventDedupTableName:
+    Type: String
+    Description: Name of the pre-provisioned DynamoDB event dedup table
+    Default: notebook-data-event-dedup
+  WebhookQueueTableName:
+    Type: String
+    Description: Name of the pre-provisioned DynamoDB webhook queue table
+    Default: notebook-data-webhook-queue
+  ServiceAccountUserId:
+    Type: String
+    Description: Box service account user ID
 
 Globals:
   Function:
@@ -43,12 +58,14 @@ Globals:
 Resources:
   ManifestTable:
     Type: AWS::Serverless::SimpleTable
+    DeletionPolicy: Retain
     Properties:
       PrimaryKey:
         Name: filepath
         Type: String
 
-  # ValidationQueueTable and SyncStateTable are pre-provisioned DynamoDB tables.
+  # ValidationQueueTable, SyncStateTable, FolderCacheTable, EventDedupTable, and
+  # WebhookQueueTable are pre-provisioned DynamoDB tables (created via AWS CLI/SSO).
   # Table names are referenced in the function environment variables below.
 
   BoxWebhookFunction:
@@ -62,6 +79,9 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
+          EVENT_DEDUP_TABLE_NAME: !Ref EventDedupTableName
+          WEBHOOK_QUEUE_TABLE_NAME: !Ref WebhookQueueTableName
+          SERVICE_ACCOUNT_USER_ID: !Ref ServiceAccountUserId
       Events:
         BoxWebhookEvent:
           Type: Api
@@ -84,6 +104,7 @@ Resources:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
           VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTableName
           SYNC_STATE_TABLE_NAME: !Ref SyncStateTableName
+          FOLDER_CACHE_TABLE_NAME: !Ref FolderCacheTableName
       Events:
         DrainQueueEvent:
           Type: Schedule
@@ -100,6 +121,23 @@ Resources:
           Properties:
             Schedule: cron(0 3 ? * SUN *)
             Input: '{"mode": "full-sync"}'
+
+  # WebhookWorkerFunction's DDB Streams event source mapping is pre-provisioned
+  # via CLI/SSO, same as the DynamoDB tables above.
+  WebhookWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      MemorySize: 1024
+      # 15 minutes (Lambda's maximum — full budget for folder fan-out)
+      Timeout: 900
+      Handler: webhook_worker.lambda_handler
+      Role: !Ref LambdaRoleARN
+      Environment:
+        Variables:
+          MANIFEST_TABLE_NAME: !Ref ManifestTable
+          FOLDER_CACHE_TABLE_NAME: !Ref FolderCacheTableName
+          WEBHOOK_QUEUE_TABLE_NAME: !Ref WebhookQueueTableName
+          SERVICE_ACCOUNT_USER_ID: !Ref ServiceAccountUserId
 
   RedirectorFunction:
     Type: AWS::Serverless::Function

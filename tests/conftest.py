@@ -40,10 +40,13 @@ os.environ["BOX_FOLDER_ID"] = SHARED_BOX_FOLDER_ID
 os.environ["MANIFEST_TABLE_NAME"] = MANIFEST_TABLE_NAME
 os.environ["SECRET_ROLE_ARN"] = SECRET_ROLE_ARN
 os.environ["AWS_DEFAULT_REGION"] = "gl-north-14"
-# Mirrors SAM template; unused until Story 1.3 adds queue-write code.
 os.environ["ENABLE_ASYNC_VALIDATION"] = "true"
 os.environ["VALIDATION_QUEUE_TABLE_NAME"] = "test-validation-queue-table"
 os.environ["SYNC_STATE_TABLE_NAME"] = "test-sync-state-table"
+os.environ["FOLDER_CACHE_TABLE_NAME"] = "test-folder-cache-table"
+os.environ["EVENT_DEDUP_TABLE_NAME"] = "test-event-dedup-table"
+os.environ["WEBHOOK_QUEUE_TABLE_NAME"] = "test-webhook-queue-table"
+os.environ["SERVICE_ACCOUNT_USER_ID"] = "12345678"
 
 
 @pytest.fixture(autouse=True)
