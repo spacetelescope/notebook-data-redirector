@@ -19,6 +19,7 @@ VALIDATION_QUEUE_TABLE_NAME = os.environ.get("VALIDATION_QUEUE_TABLE_NAME", "")
 SYNC_STATE_TABLE_NAME = os.environ.get("SYNC_STATE_TABLE_NAME", "")
 
 STALE_THRESHOLD_SECONDS = 72000  # 20 hours
+FOLDER_CACHE_TTL = 300  # 5 minutes
 
 
 # --- Structured JSON Logging ---
@@ -83,6 +84,10 @@ def log_action(level, function, action, **kwargs):
 # --- HTTP Pool (lazy-init for URL validation) ---
 
 _http = None
+
+# --- Folder Sharing Cache (in-invocation, TTL-based) ---
+
+_folder_sharing_cache = {}  # {folder_id: {"public": bool, "checked_at": float}}
 
 
 def _get_http_pool():
@@ -200,11 +205,12 @@ def _clear_box_client_cache():
 
 def _reset_all_caches():
     """Test-only: clear all module-level caches."""
-    global _cached_secret, _box_client, _box_client_expires_at, _http
+    global _cached_secret, _box_client, _box_client_expires_at, _http, _folder_sharing_cache
     _cached_secret = None
     _box_client = None
     _box_client_expires_at = 0
     _http = None
+    _folder_sharing_cache = {}
 
 
 def with_box_retry(func, *args, **kwargs):
@@ -277,6 +283,53 @@ def is_any_parent_public(client, file):
             return True
 
     return False
+
+
+def _get_cached_folder_sharing(folder_id):
+    entry = _folder_sharing_cache.get(folder_id)
+    if entry and (time.time() - entry["checked_at"]) < FOLDER_CACHE_TTL:
+        return entry["public"]
+    return None
+
+
+def _cache_folder_sharing(folder_id, public):
+    _folder_sharing_cache[folder_id] = {"public": public, "checked_at": time.time()}
+
+
+def ensure_folder_shared(client, file):
+    """Walk ancestor folders from file toward root, correcting sharing as needed.
+
+    Stops early if an ancestor is already correctly shared (inheritance).
+    Uses module-level cache to avoid redundant Box API calls within an invocation.
+    """
+    entries = file.path_collection["entries"]
+    folder_ids = [e["id"] for e in entries]
+
+    if BOX_FOLDER_ID not in folder_ids:
+        return  # file is outside the managed tree
+
+    root_idx = folder_ids.index(BOX_FOLDER_ID)
+    # Walk bottom-up (from immediate parent toward root) for efficiency
+    for entry in reversed(entries[root_idx:]):
+        folder_id = entry["id"]
+
+        cached = _get_cached_folder_sharing(folder_id)
+        if cached is True:
+            break  # correctly shared — all ancestors above are also correct
+
+        if cached is None:
+            # Not cached — read from Box
+            folder = with_box_retry(get_folder, client, folder_id)
+            if folder is None:
+                continue  # folder deleted? skip
+            if is_box_object_public(folder):
+                _cache_folder_sharing(folder_id, True)
+                break  # correctly shared — stop walking
+
+        # Need to fix sharing
+        with_box_retry(folder.create_shared_link, access="open", allow_download=True)
+        log_action("INFO", "sync", "fix_folder_sharing", folder_id=folder_id)
+        _cache_folder_sharing(folder_id, True)
 
 
 def create_shared_link(client, file, **boxargs):

@@ -38,6 +38,14 @@ def _repair_broken_url(filepath, manifest_item, manifest_table):
             return "deleted"
 
         file = common.with_box_retry(common.create_shared_link, client, file, access="open", allow_download=True)
+
+        # Ensure ancestor folders are correctly shared (best-effort)
+        try:
+            common.ensure_folder_shared(client, file)
+        except Exception as e:
+            common.log_action("WARNING", "sync", "folder_sharing_check_failed",
+                              filepath=filepath, error_type=type(e).__name__)
+
         item = common.make_ddb_item(file)
         item["last_validated"] = datetime.now(timezone.utc).isoformat()
         manifest_table.put_item(Item=item)

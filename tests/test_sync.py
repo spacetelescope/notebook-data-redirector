@@ -412,6 +412,7 @@ class TestRepairBrokenUrl:
                                   manifest_item, mock_repaired_file, mock_box_client):
         ddb_items.append(manifest_item)
         monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "ensure_folder_shared", lambda client, file: None)
 
         retry_calls = []
 
@@ -543,6 +544,90 @@ class TestDrainQueueWithRepair:
         sync.lambda_handler({"mode": "drain-queue"}, mock_context)
 
         assert sync_state_items[0]["items_repaired"] == 1
+
+    def test_successful_repair_calls_ensure_folder_shared(
+            self, monkeypatch, ddb_items, validation_queue_items,
+            sync_state_items, mock_context, capture_log,
+            create_shared_file, data_folder, mock_box_client):
+        ddb_items.append({"filepath": "data/repair.fits", "box_file_id": "111",
+                          "download_url": "https://box.com/dl/old"})
+        validation_queue_items.append({"filepath": "data/repair.fits",
+                                       "download_url": "https://box.com/dl/old"})
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+
+        create_shared_file(parent_folder=data_folder, id="111", name="repair.fits")
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        folder_shared_calls = []
+        original = common.ensure_folder_shared
+
+        def spy(client, file):
+            folder_shared_calls.append(file)
+            return original(client, file)
+        monkeypatch.setattr(common, "ensure_folder_shared", spy)
+
+        sync.lambda_handler({"mode": "drain-queue"}, mock_context)
+
+        assert len(folder_shared_calls) == 1
+        assert ddb_items[0]["download_url"] != "https://box.com/dl/old"
+
+    def test_folder_sharing_failure_does_not_prevent_repair(
+            self, monkeypatch, ddb_items, validation_queue_items,
+            sync_state_items, mock_context, capture_log,
+            create_shared_file, data_folder, mock_box_client):
+        ddb_items.append({"filepath": "data/repair.fits", "box_file_id": "111",
+                          "download_url": "https://box.com/dl/old"})
+        validation_queue_items.append({"filepath": "data/repair.fits",
+                                       "download_url": "https://box.com/dl/old"})
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+
+        repaired_file = create_shared_file(parent_folder=data_folder, id="111",
+                                            name="repair.fits")
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        def explode(client, file):
+            raise RuntimeError("Box API exploded")
+        monkeypatch.setattr(common, "ensure_folder_shared", explode)
+
+        sync.lambda_handler({"mode": "drain-queue"}, mock_context)
+
+        # Repair still succeeded despite folder sharing failure
+        assert len(ddb_items) == 1
+        assert "last_validated" in ddb_items[0]
+        assert ddb_items[0]["download_url"] == repaired_file.shared_link["download_url"]
+        assert sync_state_items[0]["items_repaired"] == 1
+        # Warning logged
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "folder_sharing_check_failed" in actions
+
+    def test_ensure_folder_shared_exception_caught_and_logged(
+            self, monkeypatch, mock_ddb_table, ddb_items,
+            create_shared_file, data_folder, mock_box_client, capture_log):
+        """Unit-level: _repair_broken_url catches ensure_folder_shared exception."""
+        manifest_item = {"filepath": "data/broken.fits", "box_file_id": "111",
+                         "download_url": "https://box.com/dl/old"}
+        ddb_items.append(manifest_item)
+        create_shared_file(parent_folder=data_folder, id="111", name="broken.fits")
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        def explode(client, file):
+            raise ValueError("something went wrong")
+        monkeypatch.setattr(common, "ensure_folder_shared", explode)
+
+        result = sync._repair_broken_url("data/broken.fits", manifest_item, mock_ddb_table)
+
+        assert result == "repaired"
+        log_lines = capture_log.getvalue().strip().split("\n")
+        entries = [json.loads(line) for line in log_lines]
+        assert any(e["action"] == "folder_sharing_check_failed" and
+                   e["error_type"] == "ValueError" for e in entries)
 
     def test_mixed_outcomes_in_drain_run(
             self, monkeypatch, ddb_items, validation_queue_items,

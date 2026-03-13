@@ -502,6 +502,167 @@ class TestValidateDownloadUrl:
         assert kwargs["retries"].redirect == 3
 
 
+class TestEnsureFolderShared:
+    @pytest.fixture
+    def jwst_folder(self, create_folder, managed_folder):
+        return create_folder(parent_folder=managed_folder, name="jwst")
+
+    @pytest.fixture
+    def nircam_folder(self, create_folder, jwst_folder):
+        return create_folder(parent_folder=jwst_folder, name="nircam")
+
+    def test_corrects_incorrectly_shared_ancestor(self, create_file, create_shared_link,
+                                                    jwst_folder, nircam_folder, mock_box_client,
+                                                    monkeypatch):
+        """Folder with incorrect sharing gets corrected."""
+        # jwst_folder has no shared_link (None) — needs correction
+        file = create_file(parent_folder=nircam_folder, name="test.fits")
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        common.ensure_folder_shared(mock_box_client, file)
+
+        # Both folders should now be shared (nircam first, then jwst)
+        assert common.is_box_object_public(nircam_folder)
+        assert common.is_box_object_public(jwst_folder)
+
+    def test_early_break_on_correctly_shared(self, create_file, create_shared_folder,
+                                              create_folder, managed_folder,
+                                              mock_box_client, monkeypatch):
+        """Walk stops when a correctly shared ancestor is found."""
+        shared_parent = create_shared_folder(parent_folder=managed_folder, name="shared_parent")
+        child_folder = create_folder(parent_folder=shared_parent, name="child")
+        file = create_file(parent_folder=child_folder, name="test.fits")
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        get_folder_calls = []
+        original_get_folder = common.get_folder
+
+        def spy_get_folder(client, fid):
+            get_folder_calls.append(fid)
+            return original_get_folder(client, fid)
+        monkeypatch.setattr(common, "get_folder", spy_get_folder)
+
+        common.ensure_folder_shared(mock_box_client, file)
+
+        # child_folder gets checked first (bottom-up), then shared_parent
+        # shared_parent is already correct → walk stops, managed_folder NOT checked
+        assert child_folder.id in get_folder_calls
+        assert shared_parent.id in get_folder_calls
+        assert common.BOX_FOLDER_ID not in get_folder_calls
+
+    def test_terminates_at_root_folder(self, create_file, managed_folder,
+                                        mock_box_client, monkeypatch):
+        """Walk terminates at BOX_FOLDER_ID root."""
+        file = create_file(parent_folder=managed_folder, name="root_child.fits")
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        common.ensure_folder_shared(mock_box_client, file)
+
+        # managed_folder (BOX_FOLDER_ID) is the only entry — it gets checked/corrected
+        assert common.is_box_object_public(managed_folder)
+
+    def test_cached_state_reused(self, create_file, jwst_folder, nircam_folder,
+                                  mock_box_client, monkeypatch):
+        """Cached folder state prevents redundant Box API calls."""
+        file1 = create_file(parent_folder=nircam_folder, name="file1.fits")
+        file2 = create_file(parent_folder=nircam_folder, name="file2.fits")
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        get_folder_calls = []
+        original_get_folder = common.get_folder
+
+        def spy_get_folder(client, fid):
+            get_folder_calls.append(fid)
+            return original_get_folder(client, fid)
+        monkeypatch.setattr(common, "get_folder", spy_get_folder)
+
+        common.ensure_folder_shared(mock_box_client, file1)
+        call_count_after_first = len(get_folder_calls)
+
+        common.ensure_folder_shared(mock_box_client, file2)
+        # Second call should NOT make any get_folder calls (all cached as True → early break)
+        assert len(get_folder_calls) == call_count_after_first
+
+    def test_expired_cache_triggers_fresh_call(self, create_file, jwst_folder,
+                                                nircam_folder, mock_box_client,
+                                                monkeypatch):
+        """Expired cache entry (> 5 min) triggers fresh Box API call."""
+        file = create_file(parent_folder=nircam_folder, name="test.fits")
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        common.ensure_folder_shared(mock_box_client, file)
+
+        # Expire all cache entries
+        for entry in common._folder_sharing_cache.values():
+            entry["checked_at"] = entry["checked_at"] - common.FOLDER_CACHE_TTL - 1
+
+        get_folder_calls = []
+        original_get_folder = common.get_folder
+
+        def spy_get_folder(client, fid):
+            get_folder_calls.append(fid)
+            return original_get_folder(client, fid)
+        monkeypatch.setattr(common, "get_folder", spy_get_folder)
+
+        common.ensure_folder_shared(mock_box_client, file)
+        # Should have made fresh calls due to expired cache
+        assert len(get_folder_calls) > 0
+
+    def test_multi_level_correction(self, create_file, create_folder,
+                                     managed_folder, mock_box_client, monkeypatch):
+        """Two incorrect folders in chain both get corrected."""
+        folder_a = create_folder(parent_folder=managed_folder, name="level_a")
+        folder_b = create_folder(parent_folder=folder_a, name="level_b")
+        file = create_file(parent_folder=folder_b, name="deep.fits")
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        assert not common.is_box_object_public(folder_a)
+        assert not common.is_box_object_public(folder_b)
+
+        common.ensure_folder_shared(mock_box_client, file)
+
+        assert common.is_box_object_public(folder_a)
+        assert common.is_box_object_public(folder_b)
+
+    def test_deleted_folder_skipped(self, create_file, create_folder,
+                                     managed_folder, mock_box_client, monkeypatch):
+        """Deleted folder (get_folder returns None) is skipped, walk continues."""
+        folder_a = create_folder(parent_folder=managed_folder, name="level_a")
+        folder_b = create_folder(parent_folder=folder_a, name="level_b")
+        file = create_file(parent_folder=folder_b, name="deep.fits")
+
+        original_get_folder = common.get_folder
+
+        def selective_get_folder(client, fid):
+            if fid == folder_b.id:
+                return None  # simulate deleted folder
+            return original_get_folder(client, fid)
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+        monkeypatch.setattr(common, "get_folder", selective_get_folder)
+
+        common.ensure_folder_shared(mock_box_client, file)
+
+        # folder_b was skipped (deleted), folder_a still got corrected
+        assert common.is_box_object_public(folder_a)
+
+    def test_file_outside_managed_tree_skipped(self, create_file, mock_box_client,
+                                                monkeypatch):
+        """File outside managed tree (no BOX_FOLDER_ID in ancestors) is skipped."""
+        file = create_file()  # parent is ROOT_FOLDER, no BOX_FOLDER_ID in chain
+        monkeypatch.setattr(common, "with_box_retry",
+                            lambda func, *a, **kw: func(*a, **kw))
+
+        # Should not raise
+        common.ensure_folder_shared(mock_box_client, file)
+
+
 class TestIsStale:
     def test_none_is_stale(self):
         assert common.is_stale(None) is True
