@@ -1,4 +1,7 @@
 import json
+from datetime import datetime, timezone
+
+from botocore.exceptions import ClientError
 
 import common
 
@@ -6,23 +9,38 @@ STATUS_SUCCESS = {"statusCode": 200}
 
 
 def lambda_handler(event, context):
+    try:
+        return _handle_event(event)
+    except Exception as e:
+        common.log_action("ERROR", "webhook_receiver", "webhook_handler_error",
+                          error_type=type(e).__name__, error=str(e))
+        return STATUS_SUCCESS
+
+
+def _handle_event(event):
     common.log_action("INFO", "webhook_receiver", "event_received")
 
     raw_body = event["body"]
     body = json.loads(raw_body)
     trigger = body["trigger"]
     source = body["source"]
+    created_by = body.get("created_by", {})
+
+    # Cascade prevention: skip events triggered by our own service account
+    created_by_id = created_by.get("id", "") if isinstance(created_by, dict) else ""
+    if common.SERVICE_ACCOUNT_USER_ID and created_by_id == common.SERVICE_ACCOUNT_USER_ID:
+        common.log_action("INFO", "webhook_receiver", "cascade_event_skipped",
+                          trigger=trigger, created_by_id=created_by_id)
+        return STATUS_SUCCESS
 
     # The event structure varies by trigger
     if "item" in source:
         box_id = source["item"]["id"]
         box_type = source["item"]["type"]
     elif "id" in source:
-        # not covered by tests
         box_id = source["id"]
         box_type = source["type"]
     else:
-        # not covered by tests
         raise RuntimeError("Missing id field")
 
     common.log_action("INFO", "webhook_receiver", "trigger_received", box_file_id=box_id)
@@ -31,6 +49,32 @@ def lambda_handler(event, context):
     if trigger not in common.HANDLED_TRIGGERS:
         common.log_action("INFO", "webhook_receiver", "trigger_unsupported")
         return STATUS_SUCCESS
+
+    # Event deduplication: conditional write to dedup table
+    event_id = body.get("id", "")
+    if event_id:
+        dedup_table = common.get_event_dedup_table()
+        now = datetime.now(timezone.utc)
+        try:
+            dedup_table.put_item(
+                Item={
+                    "event_id": event_id,
+                    "processed_at": now.isoformat(),
+                    "expires_at": int(now.timestamp()) + common.EVENT_DEDUP_TTL_SECONDS,
+                },
+                ConditionExpression="attribute_not_exists(event_id)",
+            )
+        except ClientError as e:
+            if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                common.log_action("INFO", "webhook_receiver", "duplicate_event_skipped",
+                                  event_id=event_id)
+                return STATUS_SUCCESS
+            else:
+                common.log_action("WARNING", "webhook_receiver", "dedup_write_failed",
+                                  event_id=event_id, error_type=type(e).__name__)
+        except Exception as e:
+            common.log_action("WARNING", "webhook_receiver", "dedup_write_failed",
+                              event_id=event_id, error_type=type(e).__name__)
 
     # Signature verification uses only the webhook key — no Box client needed
     webhook_key = common.get_webhook_signature_key()

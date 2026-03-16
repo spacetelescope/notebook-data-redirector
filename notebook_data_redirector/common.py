@@ -24,6 +24,7 @@ SERVICE_ACCOUNT_USER_ID = os.environ.get("SERVICE_ACCOUNT_USER_ID", "")
 
 STALE_THRESHOLD_SECONDS = 72000  # 20 hours
 FOLDER_CACHE_TTL = 300  # 5 minutes
+EVENT_DEDUP_TTL_SECONDS = 172800  # 48 hours
 
 
 # --- Structured JSON Logging ---
