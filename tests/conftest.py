@@ -263,6 +263,19 @@ def mock_ddb_table(ddb_items):
                     attr_name = names.get(lhs, lhs)
                     item[attr_name] = values[rhs]
 
+        def query(self, IndexName=None, KeyConditionExpression=None, **kwargs):
+            if IndexName == "box_file_id-index":
+                # _values is a private boto3 attribute on ConditionExpression objects.
+                # If boto3 changes this internal API, fail loudly rather than silently.
+                assert hasattr(KeyConditionExpression, "_values"), (
+                    "boto3 ConditionExpression internal API changed: "
+                    "_values attribute no longer exists. Update MockTable.query()."
+                )
+                target_value = KeyConditionExpression._values[1]
+                matching = [i for i in ddb_items if i.get("box_file_id") == target_value]
+                return {"Items": matching}
+            return {"Items": []}
+
         def scan(self, ExclusiveStartKey=None):
             if ExclusiveStartKey:
                 start_index = (
@@ -456,8 +469,30 @@ def mock_sync_state_table(sync_state_items):
 
 
 @pytest.fixture
+def webhook_queue_items():
+    return []
+
+
+@pytest.fixture
+def mock_webhook_queue_table(webhook_queue_items):
+    class MockTable:
+        def put_item(self, Item):
+            webhook_queue_items.append(Item)
+
+        def get_item(self, Key):
+            result = {}
+            item = next((i for i in webhook_queue_items if i.get("work_id") == Key.get("work_id")), None)
+            if item:
+                result["Item"] = item
+            return result
+
+    return MockTable()
+
+
+@pytest.fixture
 def mock_context():
     class MockContext:
         def get_remaining_time_in_millis(self):
             return 900000  # 15 minutes
+
     return MockContext()

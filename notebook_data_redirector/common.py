@@ -5,6 +5,7 @@ import time
 from datetime import datetime, timezone
 
 import boto3
+from boto3.dynamodb.conditions import Key
 import urllib3
 import urllib3.util
 from boxsdk import Client, JWTAuth
@@ -25,6 +26,7 @@ SERVICE_ACCOUNT_USER_ID = os.environ.get("SERVICE_ACCOUNT_USER_ID", "")
 STALE_THRESHOLD_SECONDS = 72000  # 20 hours
 FOLDER_CACHE_TTL = 300  # 5 minutes
 EVENT_DEDUP_TTL_SECONDS = 172800  # 48 hours
+WEBHOOK_QUEUE_TTL_SECONDS = 604800  # 7 days
 
 
 # --- Structured JSON Logging ---
@@ -406,6 +408,15 @@ def put_file_item(ddb_table, file):
 
 def delete_file_item(ddb_table, file):
     ddb_table.delete_item(Key={"filepath": get_filepath(file)})
+
+
+def get_manifest_item_by_box_file_id(ddb_table, box_file_id):
+    response = ddb_table.query(
+        IndexName="box_file_id-index",
+        KeyConditionExpression=Key("box_file_id").eq(box_file_id),
+    )
+    items = response.get("Items", [])
+    return items[0] if items else None
 
 
 def get_download_url(ddb_table, filepath):
