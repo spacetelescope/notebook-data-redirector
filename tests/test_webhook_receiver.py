@@ -24,7 +24,9 @@ class TestWebhookReceiver:
         monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
         monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
         monkeypatch.setattr(common, "get_webhook_signature_key", lambda: box_webhook_signature_key)
-        monkeypatch.setattr(common, "get_event_dedup_table", lambda: MagicMock())
+        mock_dedup = MagicMock()
+        mock_dedup.get_item.return_value = {}
+        monkeypatch.setattr(common, "get_event_dedup_table", lambda: mock_dedup)
 
         def mock_validate(body, headers, signature_key):
             return compute_webhook_signature(body) == headers["box-signature-primary"]
@@ -247,6 +249,7 @@ class TestCascadePrevention:
         event = self._make_event(created_by={"type": "user", "id": "12345678", "name": "Service"})
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
+        self.mock_dedup_table.get_item.assert_not_called()
         self.mock_dedup_table.put_item.assert_not_called()
         self.mock_box_client_fn.assert_not_called()
         self.mock_ddb_fn.assert_not_called()
@@ -256,27 +259,30 @@ class TestCascadePrevention:
 
     def test_different_user_continues(self):
         """Event with different created_by.id → processing continues (not filtered)."""
+        self.mock_dedup_table.get_item.return_value = {}
         event = self._make_event(created_by={"type": "user", "id": "99999999", "name": "Other"})
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
-        # Dedup table should have been called (processing continued past cascade check)
-        self.mock_dedup_table.put_item.assert_called_once()
+        # Dedup check should have been called (processing continued past cascade check)
+        self.mock_dedup_table.get_item.assert_called_once()
 
     def test_no_created_by_continues(self):
         """Event with no created_by field → processing continues (not filtered)."""
+        self.mock_dedup_table.get_item.return_value = {}
         event = self._make_event(created_by=None)
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
-        self.mock_dedup_table.put_item.assert_called_once()
+        self.mock_dedup_table.get_item.assert_called_once()
 
     def test_empty_service_account_id_skips_check(self, monkeypatch):
         """SERVICE_ACCOUNT_USER_ID is empty → cascade check skipped, processing continues."""
         monkeypatch.setattr(common, "SERVICE_ACCOUNT_USER_ID", "")
+        self.mock_dedup_table.get_item.return_value = {}
         event = self._make_event(created_by={"type": "user", "id": "12345678", "name": "Service"})
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
         # Should have continued past cascade check to dedup
-        self.mock_dedup_table.put_item.assert_called_once()
+        self.mock_dedup_table.get_item.assert_called_once()
 
 
 class TestEventDeduplication:
@@ -303,15 +309,18 @@ class TestEventDeduplication:
         }
         return {"body": json.dumps(body), "headers": {"box-signature-primary": "sig"}}
 
-    def test_new_event_dedup_write_succeeds(self):
-        """First event with unique event_id → dedup write succeeds, processing continues."""
+    def test_new_event_dedup_write_after_processing(self):
+        """First event with unique event_id → dedup record written after processing."""
+        self.mock_dedup_table.get_item.return_value = {}  # not a duplicate
         event = self._make_event(event_id="evt_new_1")
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
+        self.mock_dedup_table.get_item.assert_called_once()
         self.mock_dedup_table.put_item.assert_called_once()
 
     def test_dedup_item_schema(self):
         """Dedup item has correct schema: event_id, processed_at, expires_at with 48h TTL."""
+        self.mock_dedup_table.get_item.return_value = {}
         event = self._make_event(event_id="evt_schema_check")
         webhook_receiver.lambda_handler(event, {})
         call_kwargs = self.mock_dedup_table.put_item.call_args[1]
@@ -323,14 +332,12 @@ class TestEventDeduplication:
         expected_min = int(time.time()) + common.EVENT_DEDUP_TTL_SECONDS - 10
         expected_max = int(time.time()) + common.EVENT_DEDUP_TTL_SECONDS + 10
         assert expected_min <= item["expires_at"] <= expected_max
-        assert call_kwargs["ConditionExpression"] == "attribute_not_exists(event_id)"
 
     def test_duplicate_event_returns_200(self, capture_log):
-        """Duplicate event → ConditionalCheckFailedException, 200 returned, no further processing."""
-        self.mock_dedup_table.put_item.side_effect = ClientError(
-            {"Error": {"Code": "ConditionalCheckFailedException", "Message": "condition not met"}},
-            "PutItem",
-        )
+        """Duplicate event → get_item finds existing record, 200 returned, no further processing."""
+        self.mock_dedup_table.get_item.return_value = {
+            "Item": {"event_id": "evt_dup_1", "processed_at": "2026-03-16T00:00:00+00:00", "expires_at": 9999999999}
+        }
         event = self._make_event(event_id="evt_dup_1")
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
@@ -339,6 +346,7 @@ class TestEventDeduplication:
         self.mock_box_client_fn.assert_not_called()
         self.mock_ddb_fn.assert_not_called()
         self.mock_validate_fn.assert_not_called()
+        self.mock_dedup_table.put_item.assert_not_called()
 
     def test_missing_event_id_skips_dedup(self):
         """Event with no id field → dedup skipped, processing continues."""
@@ -350,11 +358,12 @@ class TestEventDeduplication:
         event = {"body": json.dumps(body), "headers": {"box-signature-primary": "sig"}}
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
+        self.mock_dedup_table.get_item.assert_not_called()
         self.mock_dedup_table.put_item.assert_not_called()
 
-    def test_ddb_error_continues_processing(self, capture_log):
-        """DDB error on dedup write → processing continues (best-effort dedup)."""
-        self.mock_dedup_table.put_item.side_effect = ClientError(
+    def test_dedup_check_error_continues_processing(self, capture_log):
+        """DDB error on dedup check → processing continues (best-effort dedup)."""
+        self.mock_dedup_table.get_item.side_effect = ClientError(
             {"Error": {"Code": "InternalServerError", "Message": "service error"}},
             "PutItem",
         )
@@ -362,30 +371,45 @@ class TestEventDeduplication:
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
         log_output = capture_log.getvalue()
+        assert '"action": "dedup_check_failed"' in log_output
+        # Post-processing dedup write should still be attempted
+        self.mock_dedup_table.put_item.assert_called_once()
+
+    def test_dedup_write_error_swallowed(self, capture_log):
+        """DDB error on post-processing dedup write → logged but doesn't fail the handler."""
+        self.mock_dedup_table.get_item.return_value = {}
+        self.mock_dedup_table.put_item.side_effect = ClientError(
+            {"Error": {"Code": "InternalServerError", "Message": "service error"}},
+            "PutItem",
+        )
+        event = self._make_event(event_id="evt_err_2")
+        result = webhook_receiver.lambda_handler(event, {})
+        assert result["statusCode"] == 200
+        log_output = capture_log.getvalue()
         assert '"action": "dedup_write_failed"' in log_output
 
 
-class TestAlwaysReturn200:
-    """Task 3: Ensure all code paths return 200 (AC #5)."""
+class TestErrorPropagation:
+    """Verify real errors propagate (trigger Box retries) while intentional skips return 200."""
 
     @pytest.fixture(autouse=True)
     def monkeypatch_clients(self, monkeypatch):
         monkeypatch.setattr(common, "get_event_dedup_table", lambda: MagicMock())
 
-    def test_malformed_body_returns_200(self):
-        """Completely malformed body → 200 (caught by outer try/except)."""
+    def test_malformed_body_raises(self):
+        """Completely malformed body → exception propagates."""
         event = {"body": "not valid json", "headers": {}}
-        result = webhook_receiver.lambda_handler(event, {})
-        assert result["statusCode"] == 200
+        with pytest.raises(json.JSONDecodeError):
+            webhook_receiver.lambda_handler(event, {})
 
-    def test_missing_trigger_returns_200(self):
-        """Body missing trigger field → 200."""
+    def test_missing_trigger_raises(self):
+        """Body missing trigger field → KeyError propagates."""
         event = {"body": json.dumps({"source": {}}), "headers": {}}
-        result = webhook_receiver.lambda_handler(event, {})
-        assert result["statusCode"] == 200
+        with pytest.raises(KeyError):
+            webhook_receiver.lambda_handler(event, {})
 
-    def test_missing_source_id_returns_200(self, monkeypatch, capture_log):
-        """Source with no id field → 200 (RuntimeError caught)."""
+    def test_missing_source_id_raises(self, monkeypatch):
+        """Source with no id field → RuntimeError propagates."""
         monkeypatch.setattr(common, "get_webhook_signature_key", lambda: "key")
         monkeypatch.setattr(common, "validate_webhook_message", lambda body, headers, key: True)
         body = {
@@ -395,8 +419,5 @@ class TestAlwaysReturn200:
             "created_by": {"type": "user", "id": "99999999"},
         }
         event = {"body": json.dumps(body), "headers": {"box-signature-primary": "sig"}}
-        result = webhook_receiver.lambda_handler(event, {})
-        assert result["statusCode"] == 200
-        log_output = capture_log.getvalue()
-        assert '"action": "webhook_handler_error"' in log_output
-        assert '"error"' in log_output
+        with pytest.raises(RuntimeError, match="Missing id field"):
+            webhook_receiver.lambda_handler(event, {})
