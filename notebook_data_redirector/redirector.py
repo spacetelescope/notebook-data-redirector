@@ -29,11 +29,11 @@ def _maybe_queue_validation(filepath, download_url):
         if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
             common.log_action("INFO", "redirector", "queue_write_dedup", filepath=filepath)
         else:
-            common.log_action("WARNING", "redirector", "queue_write_failed",
-                              filepath=filepath, error_type=type(e).__name__)
+            common.log_action(
+                "WARNING", "redirector", "queue_write_failed", filepath=filepath, error_type=type(e).__name__
+            )
     except Exception as e:
-        common.log_action("WARNING", "redirector", "queue_write_failed",
-                          filepath=filepath, error_type=type(e).__name__)
+        common.log_action("WARNING", "redirector", "queue_write_failed", filepath=filepath, error_type=type(e).__name__)
 
 
 def lambda_handler(event, context):
@@ -45,8 +45,7 @@ def lambda_handler(event, context):
         ddb_table = common.get_ddb_table()
         download_url = common.get_download_url(ddb_table, filepath)
     except Exception as e:
-        common.log_action("ERROR", "redirector", "ddb_error",
-                          filepath=filepath, error_type=type(e).__name__)
+        common.log_action("ERROR", "redirector", "ddb_error", filepath=filepath, error_type=type(e).__name__)
         return {
             "statusCode": 502,
             "headers": {"Content-Type": "application/json"},

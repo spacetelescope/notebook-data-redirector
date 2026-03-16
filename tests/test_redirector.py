@@ -50,7 +50,14 @@ class TestRedirector:
 
     @pytest.mark.parametrize("filename", ["normal-file.dat", "file with spaces.dat"])
     def test_redirect_path(
-        self, create_redirector_event, mock_queue_table, create_folder, create_shared_file, managed_folder, ddb_items, filename
+        self,
+        create_redirector_event,
+        mock_queue_table,
+        create_folder,
+        create_shared_file,
+        managed_folder,
+        ddb_items,
+        filename,
     ):
         subfolder = create_folder(parent_folder=managed_folder)
         file = create_shared_file(parent_folder=subfolder, name=filename)
@@ -238,8 +245,14 @@ class TestConcurrency:
         return table
 
     def test_multiple_calls_same_filepath_dedup(
-        self, monkeypatch, create_redirector_event, mock_queue_table,
-        create_folder, create_shared_file, managed_folder, ddb_items,
+        self,
+        monkeypatch,
+        create_redirector_event,
+        mock_queue_table,
+        create_folder,
+        create_shared_file,
+        managed_folder,
+        ddb_items,
     ):
         monkeypatch.setattr(redirector, "ENABLE_ASYNC_VALIDATION", "true")
         subfolder = create_folder(parent_folder=managed_folder)
@@ -266,8 +279,14 @@ class TestConcurrency:
         assert all(r["statusCode"] == 302 for r in results)
 
     def test_handler_stateless_independent_calls(
-        self, monkeypatch, create_redirector_event, mock_queue_table,
-        create_folder, create_shared_file, managed_folder, ddb_items,
+        self,
+        monkeypatch,
+        create_redirector_event,
+        mock_queue_table,
+        create_folder,
+        create_shared_file,
+        managed_folder,
+        ddb_items,
     ):
         monkeypatch.setattr(redirector, "ENABLE_ASYNC_VALIDATION", "true")
         subfolder = create_folder(parent_folder=managed_folder)

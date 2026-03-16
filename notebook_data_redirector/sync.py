@@ -33,8 +33,7 @@ def _repair_broken_url(filepath, manifest_item, manifest_table):
 
         if file is None:
             manifest_table.delete_item(Key={"filepath": filepath})
-            common.log_action("WARNING", "sync", "file_not_found",
-                              filepath=filepath, box_file_id=box_file_id)
+            common.log_action("WARNING", "sync", "file_not_found", filepath=filepath, box_file_id=box_file_id)
             return "deleted"
 
         file = common.with_box_retry(common.create_shared_link, client, file, access="open", allow_download=True)
@@ -43,20 +42,25 @@ def _repair_broken_url(filepath, manifest_item, manifest_table):
         try:
             common.ensure_folder_shared(client, file)
         except Exception as e:
-            common.log_action("WARNING", "sync", "folder_sharing_check_failed",
-                              filepath=filepath, error_type=type(e).__name__)
+            common.log_action(
+                "WARNING", "sync", "folder_sharing_check_failed", filepath=filepath, error_type=type(e).__name__
+            )
 
         item = common.make_ddb_item(file)
         item["last_validated"] = datetime.now(timezone.utc).isoformat()
         manifest_table.put_item(Item=item)
 
-        common.log_action("INFO", "sync", "drain_repair_success",
-                          filepath=filepath, box_file_id=box_file_id)
+        common.log_action("INFO", "sync", "drain_repair_success", filepath=filepath, box_file_id=box_file_id)
         return "repaired"
     except Exception as e:
-        common.log_action("WARNING", "sync", "drain_repair_failed",
-                          filepath=filepath, box_file_id=manifest_item.get("box_file_id"),
-                          error_type=type(e).__name__)
+        common.log_action(
+            "WARNING",
+            "sync",
+            "drain_repair_failed",
+            filepath=filepath,
+            box_file_id=manifest_item.get("box_file_id"),
+            error_type=type(e).__name__,
+        )
         return "failed"
 
 
@@ -67,15 +71,17 @@ def _drain_queue(context):
 
     # Create sync state record
     sync_id = f"drain-queue-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
-    sync_state_table.put_item(Item={
-        "sync_id": sync_id,
-        "mode": "drain-queue",
-        "status": "running",
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "items_checked": 0,
-        "items_valid": 0,
-        "items_repaired": 0,
-    })
+    sync_state_table.put_item(
+        Item={
+            "sync_id": sync_id,
+            "mode": "drain-queue",
+            "status": "running",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "items_checked": 0,
+            "items_valid": 0,
+            "items_repaired": 0,
+        }
+    )
 
     items_checked = 0
     items_valid = 0
@@ -87,8 +93,7 @@ def _drain_queue(context):
         for item in scan_response["Items"]:
             # Check timeout budget
             if context.get_remaining_time_in_millis() < 50000:
-                common.log_action("INFO", "sync", "drain_timeout_approaching",
-                                  items_checked=items_checked)
+                common.log_action("INFO", "sync", "drain_timeout_approaching", items_checked=items_checked)
                 break
 
             filepath = item["filepath"]
@@ -98,8 +103,7 @@ def _drain_queue(context):
             manifest_result = manifest_table.get_item(Key={"filepath": filepath})
             if "Item" not in manifest_result:
                 queue_table.delete_item(Key={"filepath": filepath})
-                common.log_action("INFO", "sync", "drain_validate_orphaned_queue_item",
-                                  filepath=filepath)
+                common.log_action("INFO", "sync", "drain_validate_orphaned_queue_item", filepath=filepath)
                 continue
 
             manifest_item = manifest_result["Item"]
@@ -135,9 +139,7 @@ def _drain_queue(context):
         else:
             # for-loop completed without break — check for more pages
             if scan_response.get("LastEvaluatedKey"):
-                scan_response = queue_table.scan(
-                    ExclusiveStartKey=scan_response["LastEvaluatedKey"]
-                )
+                scan_response = queue_table.scan(ExclusiveStartKey=scan_response["LastEvaluatedKey"])
                 continue
             break
         break  # for-loop was broken (timeout) — exit while
