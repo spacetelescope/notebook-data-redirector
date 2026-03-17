@@ -392,19 +392,17 @@ class TestFolderDeleted:
             "folder_id": "777",
             "trigger": "FOLDER.DELETED",
             "source_data": {
-                "item": {
-                    "type": "folder",
-                    "id": "777",
-                    "name": "q1",
-                    "path_collection": {
-                        "total_count": 3,
-                        "entries": [
-                            {"id": "0", "name": "All Files"},
-                            {"id": "5", "name": "DMD_Managed_Data"},
-                            {"id": "100", "name": "reports"},
-                        ],
-                    },
-                }
+                "type": "folder",
+                "id": "777",
+                "name": "q1",
+                "path_collection": {
+                    "total_count": 3,
+                    "entries": [
+                        {"id": "0", "name": "All Files"},
+                        {"id": "5", "name": "DMD_Managed_Data"},
+                        {"id": "100", "name": "reports"},
+                    ],
+                },
             },
         }
         webhook_queue_items.append({"work_id": "777:evt-001", "status": "pending"})
@@ -474,19 +472,17 @@ class TestFolderDeleted:
             "folder_id": "770",
             "trigger": "FOLDER.DELETED",
             "source_data": {
-                "item": {
-                    "type": "folder",
-                    "id": "770",
-                    "name": "api",
-                    "path_collection": {
-                        "total_count": 3,
-                        "entries": [
-                            {"id": "0", "name": "All Files"},
-                            {"id": "5", "name": "DMD_Managed_Data"},
-                            {"id": "101", "name": "docs"},
-                        ],
-                    },
-                }
+                "type": "folder",
+                "id": "770",
+                "name": "api",
+                "path_collection": {
+                    "total_count": 3,
+                    "entries": [
+                        {"id": "0", "name": "All Files"},
+                        {"id": "5", "name": "DMD_Managed_Data"},
+                        {"id": "101", "name": "docs"},
+                    ],
+                },
             },
         }
         webhook_queue_items.append({"work_id": "770:evt-001", "status": "pending"})
@@ -878,18 +874,16 @@ class TestLambdaHandlerIntegration:
                         "trigger": "FOLDER.DELETED",
                         "status": "pending",
                         "source_data": {
-                            "item": {
-                                "type": "folder",
-                                "id": "88001",
-                                "name": "data",
-                                "path_collection": {
-                                    "total_count": 2,
-                                    "entries": [
-                                        {"id": "0", "name": "All Files"},
-                                        {"id": "5", "name": "DMD_Managed_Data"},
-                                    ],
-                                },
-                            }
+                            "type": "folder",
+                            "id": "88001",
+                            "name": "data",
+                            "path_collection": {
+                                "total_count": 2,
+                                "entries": [
+                                    {"id": "0", "name": "All Files"},
+                                    {"id": "5", "name": "DMD_Managed_Data"},
+                                ],
+                            },
                         },
                     },
                 )

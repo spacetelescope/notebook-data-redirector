@@ -107,38 +107,27 @@ def _update_work_item(queue_table, work_id, **fields):
     )
 
 
-def _process_folder_deleted(work_item, manifest_table, queue_table):
-    """Handle FOLDER.DELETED: scan ManifestTable and delete matching entries."""
-    work_id = work_item["work_id"]
-    source_data = work_item.get("source_data", {})
+def _extract_folder_path(source_data):
+    """Extract the folder path from work item source_data.
 
-    # Try to extract folder path from source_data
-    folder_path = None
-    item_data = source_data.get("item", {})
-    path_collection = item_data.get("path_collection", {})
+    source_data is the webhook source object — contains name and path_collection
+    directly (not nested under an 'item' key).
+    """
+    path_collection = source_data.get("path_collection", {})
     entries = path_collection.get("entries", [])
-    item_name = item_data.get("name")
+    item_name = source_data.get("name")
 
     if entries and item_name:
-        # Build the path the same way common.get_filepath does:
-        # skip entries up to and including BOX_FOLDER_ID
         folder_ids = [e.get("id") for e in entries]
         if common.BOX_FOLDER_ID in folder_ids:
             start_index = folder_ids.index(common.BOX_FOLDER_ID) + 1
             path_tokens = [e["name"] for e in entries[start_index:]] + [item_name]
-            folder_path = "/".join(path_tokens)
+            return "/".join(path_tokens)
+    return None
 
-    if not folder_path:
-        common.log_action(
-            "WARNING",
-            "webhook_worker",
-            "folder_deleted_no_path",
-            work_id=work_id,
-        )
-        _update_work_item(queue_table, work_id, status="completed", processed_count=0)
-        return
 
-    # Scan ManifestTable for entries under this folder path
+def _delete_stale_entries(manifest_table, folder_path):
+    """Scan ManifestTable and delete entries under the given folder path."""
     deleted_count = 0
     scan_kwargs = {}
     while True:
@@ -152,6 +141,27 @@ def _process_folder_deleted(work_item, manifest_table, queue_table):
             scan_kwargs = {"ExclusiveStartKey": response["LastEvaluatedKey"]}
         else:
             break
+    return deleted_count
+
+
+def _process_folder_deleted(work_item, manifest_table, queue_table):
+    """Handle FOLDER.DELETED: scan ManifestTable and delete matching entries."""
+    work_id = work_item["work_id"]
+    source_data = work_item.get("source_data", {})
+
+    folder_path = _extract_folder_path(source_data)
+
+    if not folder_path:
+        common.log_action(
+            "WARNING",
+            "webhook_worker",
+            "folder_deleted_no_path",
+            work_id=work_id,
+        )
+        _update_work_item(queue_table, work_id, status="completed", processed_count=0)
+        return
+
+    deleted_count = _delete_stale_entries(manifest_table, folder_path)
 
     common.log_action(
         "INFO",
@@ -247,6 +257,11 @@ def _process_folder_enumeration(work_item, checkpoint, manifest_table, queue_tab
             file = common.with_box_retry(common.remove_shared_link, client, file)
 
         if common.is_box_object_public(file):
+            # Delete stale entry if filepath changed (e.g., folder renamed/moved)
+            new_filepath = common.get_filepath(file)
+            old_item = common.get_manifest_item_by_box_file_id(manifest_table, file.id)
+            if old_item and old_item["filepath"] != new_filepath:
+                manifest_table.delete_item(Key={"filepath": old_item["filepath"]})
             common.put_file_item(manifest_table, file)
         else:
             common.delete_file_item(manifest_table, file)
