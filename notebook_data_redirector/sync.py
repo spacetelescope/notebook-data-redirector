@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import common
 
@@ -8,17 +8,64 @@ def lambda_handler(event, context):
     common.log_action("INFO", "sync", "sync_start", mode=mode)
 
     if mode == "full-sync":
-        _full_sync()
+        _full_sync(context)
         return
     elif mode == "drain-queue":
         _drain_queue(context)
         return
     elif mode == "reconciliation":
-        common.log_action("INFO", "sync", "mode_not_implemented", mode=mode)
+        _reconciliation(context)
         return
     else:
         common.log_action("WARNING", "sync", "unknown_mode", mode=mode)
         return
+
+
+def _create_sync_state(sync_state_table, mode):
+    """Write initial sync state record. Returns sync_id."""
+    now = datetime.now(timezone.utc)
+    sync_id = f"{mode}-{now.strftime('%Y-%m-%dT%H:%M:%S')}"
+    sync_state_table.put_item(
+        Item={
+            "sync_id": sync_id,
+            "mode": mode,
+            "status": "running",
+            "started_at": now.isoformat(),
+            "items_checked": 0,
+            "items_repaired": 0,
+            "expires_at": int((now + timedelta(days=30)).timestamp()),
+        }
+    )
+    return sync_id
+
+
+def _validate_stat_keys(stats):
+    """Raise ValueError if any stat key is not a safe DynamoDB attribute name."""
+    for key in stats:
+        if not key.isidentifier():
+            raise ValueError(f"Invalid stat key: {key!r}")
+
+
+def _complete_sync_state(sync_state_table, sync_id, stats):
+    """Update sync state record to completed with final stats."""
+    _validate_stat_keys(stats)
+    expr_parts = ["#s = :status", "completed_at = :ts"]
+    names = {"#s": "status"}
+    values = {
+        ":status": "completed",
+        ":ts": datetime.now(timezone.utc).isoformat(),
+    }
+    for i, (key, val) in enumerate(stats.items()):
+        placeholder = f":stat{i}"
+        expr_parts.append(f"{key} = {placeholder}")
+        values[placeholder] = val
+
+    sync_state_table.update_item(
+        Key={"sync_id": sync_id},
+        UpdateExpression="SET " + ", ".join(expr_parts),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
 
 
 def _repair_broken_url(filepath, manifest_item, manifest_table):
@@ -69,19 +116,11 @@ def _drain_queue(context):
     manifest_table = common.get_ddb_table()
     sync_state_table = common.get_sync_state_table()
 
-    # Create sync state record
-    sync_id = f"drain-queue-{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
-    sync_state_table.put_item(
-        Item={
-            "sync_id": sync_id,
-            "mode": "drain-queue",
-            "status": "running",
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "items_checked": 0,
-            "items_valid": 0,
-            "items_repaired": 0,
-        }
-    )
+    try:
+        sync_id = _create_sync_state(sync_state_table, "drain-queue")
+    except Exception as e:
+        common.log_action("WARNING", "sync", "sync_state_init_failed", error_type=type(e).__name__)
+        sync_id = None
 
     items_checked = 0
     items_valid = 0
@@ -145,21 +184,50 @@ def _drain_queue(context):
         break  # for-loop was broken (timeout) — exit while
 
     # Update sync state
-    sync_state_table.update_item(
-        Key={"sync_id": sync_id},
-        UpdateExpression="SET #s = :status, completed_at = :ts, items_checked = :checked, items_valid = :valid, items_repaired = :repaired",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={
-            ":status": "completed",
-            ":ts": datetime.now(timezone.utc).isoformat(),
-            ":checked": items_checked,
-            ":valid": items_valid,
-            ":repaired": items_repaired,
-        },
-    )
+    if sync_id is not None:
+        try:
+            _complete_sync_state(
+                sync_state_table,
+                sync_id,
+                {"items_checked": items_checked, "items_valid": items_valid, "items_repaired": items_repaired},
+            )
+        except Exception as e:
+            common.log_action("WARNING", "sync", "sync_state_complete_failed", error_type=type(e).__name__)
 
 
-def _full_sync():
+def _reconciliation(context):
+    # context used for timeout checks when reconciliation logic is added (Story 3.2)
+    sync_state_table = common.get_sync_state_table()
+
+    try:
+        sync_id = _create_sync_state(sync_state_table, "reconciliation")
+    except Exception as e:
+        common.log_action("WARNING", "sync", "sync_state_init_failed", error_type=type(e).__name__)
+        sync_id = None
+
+    common.log_action("INFO", "sync", "reconciliation_start")
+
+    # Reconciliation logic is implemented in Story 3.2.
+    # This scaffold creates sync state and completes immediately.
+
+    if sync_id is not None:
+        try:
+            _complete_sync_state(sync_state_table, sync_id, {"items_checked": 0, "items_repaired": 0})
+        except Exception as e:
+            common.log_action("WARNING", "sync", "sync_state_complete_failed", error_type=type(e).__name__)
+
+    common.log_action("INFO", "sync", "reconciliation_complete")
+
+
+def _full_sync(context):
+    sync_state_table = common.get_sync_state_table()
+
+    try:
+        sync_id = _create_sync_state(sync_state_table, "full-sync")
+    except Exception as e:
+        common.log_action("WARNING", "sync", "sync_state_init_failed", error_type=type(e).__name__)
+        sync_id = None
+
     ddb_table = common.get_ddb_table()
     box_client = common.get_box_client()
     root_folder = common.get_folder(box_client, common.BOX_FOLDER_ID)
@@ -168,14 +236,20 @@ def _full_sync():
     common.log_action("INFO", "sync", "checking_box_files")
     shared_file_ids = set()
     shared_filepaths = set()
-    count = 0
+    items_checked = 0
+    items_valid = 0
+    items_repaired = 0
     for file, shared in common.iterate_files(root_folder, shared=root_shared):
-        count += 1
+        items_checked += 1
         if (not common.is_box_object_public(file)) and shared:
             # this includes an API call
             file = common.create_shared_link(box_client, file, access="open", allow_download=True)
+            items_repaired += 1
         elif (common.is_box_object_public(file)) and (not shared):
             file = common.remove_shared_link(box_client, file)
+            items_repaired += 1
+        else:
+            items_valid += 1
 
         if common.is_box_object_public(file):
             shared_file_ids.add(file.id)
@@ -183,15 +257,13 @@ def _full_sync():
             common.put_file_item(ddb_table, file)
         else:
             common.delete_file_item(ddb_table, file)
-    common.log_action("INFO", "sync", "box_files_processed", count=count)
+    common.log_action("INFO", "sync", "box_files_processed", count=items_checked)
 
     common.log_action("INFO", "sync", "checking_ddb_items")
-    count = 0
     scan_response = ddb_table.scan()
     delete_keys = set()
     while True:
         for item in scan_response["Items"]:
-            count += 1
             if (item["box_file_id"] not in shared_file_ids) or (item["filepath"] not in shared_filepaths):
                 delete_keys.add(item["filepath"])
 
@@ -205,4 +277,15 @@ def _full_sync():
 
     for key in delete_keys:
         ddb_table.delete_item(Key={"filepath": key})
-    common.log_action("INFO", "sync", "ddb_items_processed", count=count)
+    items_repaired += len(delete_keys)
+    common.log_action("INFO", "sync", "ddb_items_processed", count=len(delete_keys))
+
+    if sync_id is not None:
+        try:
+            _complete_sync_state(
+                sync_state_table,
+                sync_id,
+                {"items_checked": items_checked, "items_valid": items_valid, "items_repaired": items_repaired},
+            )
+        except Exception as e:
+            common.log_action("WARNING", "sync", "sync_state_complete_failed", error_type=type(e).__name__)

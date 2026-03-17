@@ -11,12 +11,13 @@ import sync
 
 class TestSync:
     @pytest.fixture(autouse=True)
-    def monkeypatch_clients(self, monkeypatch, mock_ddb_table, mock_box_client):
+    def monkeypatch_clients(self, monkeypatch, mock_ddb_table, mock_box_client, mock_sync_state_table):
         monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
         monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
 
-    def test_sync_empty(self, ddb_items):
-        sync.lambda_handler({"mode": "full-sync"}, None)
+    def test_sync_empty(self, ddb_items, mock_context):
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
         assert len(ddb_items) == 0
 
     def test_sync(
@@ -29,6 +30,7 @@ class TestSync:
         managed_folder,
         create_shared_link,
         mock_box_client,
+        mock_context,
     ):
         # supposed to exist after sync
         shared_folder = create_shared_folder(parent_folder=managed_folder)
@@ -65,14 +67,14 @@ class TestSync:
         unshared_folder = create_folder(parent=managed_folder)
         shared_file = create_shared_file(parent=unshared_folder)
 
-        sync.lambda_handler({"mode": "full-sync"}, None)
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
 
         assert len(ddb_items) == 3
         file_ids = {i["box_file_id"] for i in ddb_items}
         assert file_ids == {correct_file.id, missing_file.id, unshared_file.id}
         assert common.is_box_object_public(shared_file) is False
 
-    def test_sync_ddb_paging(self, ddb_items):
+    def test_sync_ddb_paging(self, ddb_items, mock_context):
         for i in range(5 * 2 + 1):
             ddb_items.append(
                 {
@@ -82,17 +84,20 @@ class TestSync:
                 }
             )
 
-        sync.lambda_handler({"mode": "full-sync"}, None)
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
 
         assert len(ddb_items) == 0
 
 
 class TestSyncModeDispatch:
-    def test_reconciliation_mode_stub(self, capture_log):
+    def test_reconciliation_mode_dispatches(self, capture_log, monkeypatch, mock_sync_state_table):
+        monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
         sync.lambda_handler({"mode": "reconciliation"}, None)
         log_lines = capture_log.getvalue().strip().split("\n")
         actions = [json.loads(line)["action"] for line in log_lines]
-        assert "mode_not_implemented" in actions
+        assert "reconciliation_start" in actions
+        assert "reconciliation_complete" in actions
+        assert "mode_not_implemented" not in actions
 
     def test_unknown_mode(self, capture_log):
         sync.lambda_handler({"mode": "bogus"}, None)
@@ -711,3 +716,158 @@ class TestDrainQueueWithRepair:
         # "maybe.fits" should be unchanged (no last_validated)
         maybe_item = next(i for i in ddb_items if i["filepath"] == "data/maybe.fits")
         assert "last_validated" not in maybe_item
+
+
+class TestFullSyncState:
+    """Tests for sync state tracking in _full_sync() (AC #3, #4, #8)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, mock_ddb_table, mock_box_client, mock_sync_state_table):
+        monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
+
+    def test_creates_sync_state_running(self, sync_state_items, mock_context):
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        assert len(sync_state_items) == 1
+        state = sync_state_items[0]
+        assert state["mode"] == "full-sync"
+        assert state["status"] == "completed"
+        assert state["sync_id"].startswith("full-sync-")
+        assert "started_at" in state
+        assert "completed_at" in state
+
+    def test_counts_files_processed(
+        self, sync_state_items, mock_context, ddb_items, create_shared_file, create_shared_folder, managed_folder
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        create_shared_file(parent_folder=shared_folder)
+        create_shared_file(parent_folder=shared_folder)
+
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        assert sync_state_items[0]["items_checked"] == 2
+
+    def test_counts_orphans_deleted(self, sync_state_items, mock_context, ddb_items):
+        ddb_items.append(
+            {"filepath": "stale/file.dat", "box_file_id": "999", "download_url": "https://box.com/dl/stale"}
+        )
+
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        assert sync_state_items[0]["items_repaired"] >= 1
+
+    def test_includes_expires_at(self, sync_state_items, mock_context):
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        state = sync_state_items[0]
+        assert "expires_at" in state
+        # expires_at should be ~30 days from now (epoch seconds)
+        now_epoch = datetime.now(timezone.utc).timestamp()
+        thirty_days = 30 * 24 * 3600
+        assert abs(state["expires_at"] - (now_epoch + thirty_days)) < 60
+
+
+class TestReconciliationScaffold:
+    """Tests for reconciliation handler scaffold (AC #7)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, mock_sync_state_table):
+        monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
+
+    def test_creates_sync_state_and_completes(self, sync_state_items, mock_context):
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert len(sync_state_items) == 1
+        state = sync_state_items[0]
+        assert state["mode"] == "reconciliation"
+        assert state["status"] == "completed"
+        assert state["sync_id"].startswith("reconciliation-")
+        assert "started_at" in state
+        assert "completed_at" in state
+
+    def test_includes_expires_at(self, sync_state_items, mock_context):
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert "expires_at" in sync_state_items[0]
+
+    def test_no_mode_not_implemented_log(self, capture_log, mock_context):
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "mode_not_implemented" not in actions
+
+
+class TestSyncStateHelpers:
+    """Tests for shared _create_sync_state and _complete_sync_state (AC #3, #4, #5)."""
+
+    def test_create_sync_state_writes_initial_record(self, mock_sync_state_table, sync_state_items):
+        sync_id = sync._create_sync_state(mock_sync_state_table, "drain-queue")
+
+        assert sync_id.startswith("drain-queue-")
+        assert len(sync_state_items) == 1
+        state = sync_state_items[0]
+        assert state["status"] == "running"
+        assert state["mode"] == "drain-queue"
+        assert state["items_checked"] == 0
+        assert state["items_repaired"] == 0
+        assert "started_at" in state
+
+    def test_create_sync_state_includes_expires_at(self, mock_sync_state_table, sync_state_items):
+        sync._create_sync_state(mock_sync_state_table, "full-sync")
+
+        state = sync_state_items[0]
+        assert "expires_at" in state
+        now_epoch = datetime.now(timezone.utc).timestamp()
+        thirty_days = 30 * 24 * 3600
+        assert abs(state["expires_at"] - (now_epoch + thirty_days)) < 60
+
+    def test_complete_sync_state_updates_correctly(self, mock_sync_state_table, sync_state_items):
+        sync_id = sync._create_sync_state(mock_sync_state_table, "drain-queue")
+
+        sync._complete_sync_state(mock_sync_state_table, sync_id, {"items_checked": 5, "items_repaired": 2})
+
+        state = sync_state_items[0]
+        assert state["status"] == "completed"
+        assert state["items_checked"] == 5
+        assert state["items_repaired"] == 2
+        assert "completed_at" in state
+
+
+class TestDrainQueueExpiresAt:
+    """Test that drain-queue sync state includes expires_at after refactor (Task 9)."""
+
+    @pytest.fixture(autouse=True)
+    def setup_drain(self, monkeypatch, mock_ddb_table, mock_validation_queue_table, mock_sync_state_table):
+        monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
+        monkeypatch.setattr(common, "get_validation_queue_table", lambda: mock_validation_queue_table)
+        monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
+
+    def test_drain_queue_sync_state_includes_expires_at(self, sync_state_items, mock_context):
+        sync.lambda_handler({"mode": "drain-queue"}, mock_context)
+
+        assert "expires_at" in sync_state_items[0]
+        now_epoch = datetime.now(timezone.utc).timestamp()
+        thirty_days = 30 * 24 * 3600
+        assert abs(sync_state_items[0]["expires_at"] - (now_epoch + thirty_days)) < 60
+
+
+class TestValidateStatKeys:
+    """Tests for _validate_stat_keys helper."""
+
+    def test_accepts_valid_keys(self):
+        sync._validate_stat_keys({"items_checked": 0, "items_repaired": 0, "items_valid": 0})
+
+    def test_rejects_key_with_spaces(self):
+        with pytest.raises(ValueError, match="Invalid stat key"):
+            sync._validate_stat_keys({"items checked": 0})
+
+    def test_rejects_empty_key(self):
+        with pytest.raises(ValueError, match="Invalid stat key"):
+            sync._validate_stat_keys({"": 0})
+
+    def test_rejects_key_with_special_chars(self):
+        with pytest.raises(ValueError, match="Invalid stat key"):
+            sync._validate_stat_keys({"items-repaired": 0})

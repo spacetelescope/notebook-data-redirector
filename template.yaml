@@ -79,6 +79,9 @@ Resources:
       BillingMode: PAY_PER_REQUEST
       SSESpecification:
         SSEEnabled: true
+      TimeToLiveSpecification:
+        AttributeName: expires_at
+        Enabled: true
 
   FolderCacheTable:
     Type: AWS::DynamoDB::Table
