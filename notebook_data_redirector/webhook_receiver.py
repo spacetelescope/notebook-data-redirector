@@ -20,7 +20,7 @@ def _share_and_store_if_public(client, ddb, file):
 def _handle_file_event(trigger, box_id):
     ddb = common.get_ddb_table()
 
-    if trigger == "FILE.DELETED":
+    if trigger in ("FILE.DELETED", "FILE.TRASHED"):
         item = common.get_manifest_item_by_box_file_id(ddb, box_id)
         if item:
             ddb.delete_item(Key={"filepath": item["filepath"]})
@@ -82,7 +82,7 @@ def _handle_file_event(trigger, box_id):
         )
         return
 
-    # Existing logic for SHARED_LINK.*, FILE.TRASHED, FILE.RESTORED
+    # Existing logic for SHARED_LINK.*, FILE.RESTORED
     file = common.with_box_retry(common.get_file, client, box_id)
     if not file:
         common.log_action("WARNING", "webhook_receiver", "file_missing", box_file_id=box_id)
@@ -216,6 +216,7 @@ def lambda_handler(event, context):
                     "expires_at": int(now.timestamp()) + common.EVENT_DEDUP_TTL_SECONDS,
                 },
             )
+            common.log_action("INFO", "webhook_receiver", "dedup_record_written", event_id=event_id)
         except Exception as e:
             common.log_action(
                 "WARNING",

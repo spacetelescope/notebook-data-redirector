@@ -138,10 +138,9 @@ class TestWebhookReceiver:
     def test_file_trashed(self, create_webhook_event, create_shared_file, ddb_items, box_files):
         file = create_shared_file()
         ddb_items.append(common.make_ddb_item(file))
-        box_files.remove(file)
         event = create_webhook_event("FILE.TRASHED", file)
         handle_event(event)
-        assert len(ddb_items) == 1
+        assert len(ddb_items) == 0
 
     def test_file_restored(
         self, create_webhook_event, create_file, ddb_items, box_files, create_shared_folder, managed_folder
