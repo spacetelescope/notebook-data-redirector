@@ -306,7 +306,7 @@ def lambda_handler(event, context):
         try:
             trigger = work_item.get("trigger", "")
 
-            if trigger == "FOLDER.DELETED":
+            if trigger in ("FOLDER.DELETED", "FOLDER.TRASHED"):
                 _process_folder_deleted(work_item, manifest_table, queue_table)
             else:
                 _process_folder_enumeration(
