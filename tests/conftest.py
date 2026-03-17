@@ -232,6 +232,10 @@ def mock_ddb_table(ddb_items):
     class MockTable:
         BATCH_SIZE = 5
 
+        def __init__(self):
+            self._snapshot = None
+            self._snapshot_offset = 0
+
         def put_item(self, Item):
             self.delete_item({"filepath": Item["filepath"]})
             ddb_items.append(Item)
@@ -277,16 +281,19 @@ def mock_ddb_table(ddb_items):
             return {"Items": []}
 
         def scan(self, ExclusiveStartKey=None):
-            if ExclusiveStartKey:
-                start_index = (
-                    next(idx for idx, item in enumerate(ddb_items) if item["filepath"] == ExclusiveStartKey) + 1
-                )
-            else:
-                start_index = 0
+            # Snapshot on first scan, paginate through snapshot (items may be
+            # deleted between pages — real DDB handles this via position markers)
+            if ExclusiveStartKey is None:
+                self._snapshot = list(ddb_items)
+                self._snapshot_offset = 0
 
-            response = {"Items": ddb_items[start_index : start_index + MockTable.BATCH_SIZE]}
-            if len(ddb_items) >= start_index + MockTable.BATCH_SIZE:
-                response["LastEvaluatedKey"] = response["Items"][-1]["filepath"]
+            start = self._snapshot_offset
+            batch = self._snapshot[start : start + MockTable.BATCH_SIZE]
+            self._snapshot_offset = start + MockTable.BATCH_SIZE
+
+            response = {"Items": batch}
+            if self._snapshot_offset < len(self._snapshot):
+                response["LastEvaluatedKey"] = batch[-1]["filepath"]
 
             return response
 
@@ -476,7 +483,13 @@ def webhook_queue_items():
 @pytest.fixture
 def mock_webhook_queue_table(webhook_queue_items):
     class MockTable:
+        def __init__(self):
+            self.conditional_check_fails = False
+
         def put_item(self, Item):
+            existing = next((i for i in webhook_queue_items if i.get("work_id") == Item.get("work_id")), None)
+            if existing:
+                webhook_queue_items.remove(existing)
             webhook_queue_items.append(Item)
 
         def get_item(self, Key):
@@ -485,6 +498,36 @@ def mock_webhook_queue_table(webhook_queue_items):
             if item:
                 result["Item"] = item
             return result
+
+        def update_item(
+            self,
+            Key,
+            UpdateExpression,
+            ConditionExpression=None,
+            ExpressionAttributeNames=None,
+            ExpressionAttributeValues=None,
+        ):
+            from botocore.exceptions import ClientError
+
+            if self.conditional_check_fails:
+                raise ClientError(
+                    {"Error": {"Code": "ConditionalCheckFailedException", "Message": "Condition not met"}},
+                    "UpdateItem",
+                )
+
+            item = next((i for i in webhook_queue_items if i.get("work_id") == Key.get("work_id")), None)
+            if item is None:
+                item = dict(Key)
+                webhook_queue_items.append(item)
+
+            if UpdateExpression.startswith("SET "):
+                assignments = UpdateExpression[4:].split(", ")
+                names = ExpressionAttributeNames or {}
+                values = ExpressionAttributeValues or {}
+                for assignment in assignments:
+                    lhs, rhs = assignment.split(" = ")
+                    attr_name = names.get(lhs, lhs)
+                    item[attr_name] = values[rhs]
 
     return MockTable()
 
