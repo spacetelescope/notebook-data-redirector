@@ -286,6 +286,15 @@ def mock_ddb_table(ddb_items):
             if ExclusiveStartKey is None:
                 self._snapshot = list(ddb_items)
                 self._snapshot_offset = 0
+            elif self._snapshot is None:
+                # New scan with start key (checkpoint resume)
+                self._snapshot = list(ddb_items)
+                target = ExclusiveStartKey["filepath"] if isinstance(ExclusiveStartKey, dict) else ExclusiveStartKey
+                self._snapshot_offset = 0
+                for i, item in enumerate(self._snapshot):
+                    if item["filepath"] == target:
+                        self._snapshot_offset = i + 1
+                        break
 
             start = self._snapshot_offset
             batch = self._snapshot[start : start + MockTable.BATCH_SIZE]
@@ -471,6 +480,9 @@ def mock_sync_state_table(sync_state_items):
                     lhs, rhs = assignment.split(" = ")
                     attr_name = names.get(lhs, lhs)
                     item[attr_name] = values[rhs]
+
+        def scan(self):
+            return {"Items": list(sync_state_items)}
 
     return MockTable()
 

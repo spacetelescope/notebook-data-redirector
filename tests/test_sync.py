@@ -90,9 +90,12 @@ class TestSync:
 
 
 class TestSyncModeDispatch:
-    def test_reconciliation_mode_dispatches(self, capture_log, monkeypatch, mock_sync_state_table):
+    def test_reconciliation_mode_dispatches(
+        self, capture_log, monkeypatch, mock_sync_state_table, mock_ddb_table, mock_context
+    ):
         monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
-        sync.lambda_handler({"mode": "reconciliation"}, None)
+        monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
         log_lines = capture_log.getvalue().strip().split("\n")
         actions = [json.loads(line)["action"] for line in log_lines]
         assert "reconciliation_start" in actions
@@ -211,7 +214,7 @@ class TestDrainQueue:
         log_lines = capture_log.getvalue().strip().split("\n")
         actions = [json.loads(line)["action"] for line in log_lines]
         assert "drain_validate_broken" in actions
-        assert "drain_repair_failed" in actions
+        assert "repair_failed" in actions
 
     def test_does_not_stamp_uncertain_results(
         self, monkeypatch, ddb_items, validation_queue_items, sync_state_items, mock_context, capture_log
@@ -376,7 +379,7 @@ class TestRepairBrokenUrl:
         assert ddb_items[0]["download_url"] == mock_repaired_file.shared_link["download_url"]
         log_lines = capture_log.getvalue().strip().split("\n")
         actions = [json.loads(line)["action"] for line in log_lines]
-        assert "drain_repair_success" in actions
+        assert "repair_success" in actions
 
     def test_file_not_found_deletes_manifest(self, monkeypatch, mock_ddb_table, ddb_items, manifest_item, capture_log):
         ddb_items.append(manifest_item)
@@ -408,7 +411,7 @@ class TestRepairBrokenUrl:
         assert "last_validated" not in ddb_items[0]
         log_lines = capture_log.getvalue().strip().split("\n")
         entries = [json.loads(line) for line in log_lines]
-        assert any(e["action"] == "drain_repair_failed" and e["error_type"] == "ConnectionError" for e in entries)
+        assert any(e["action"] == "repair_failed" and e["error_type"] == "ConnectionError" for e in entries)
 
     def test_uses_with_box_retry(
         self, monkeypatch, mock_ddb_table, ddb_items, manifest_item, mock_repaired_file, mock_box_client
@@ -533,7 +536,7 @@ class TestDrainQueueWithRepair:
         assert "last_validated" not in ddb_items[0]
         log_lines = capture_log.getvalue().strip().split("\n")
         actions = [json.loads(line)["action"] for line in log_lines]
-        assert "drain_repair_failed" in actions
+        assert "repair_failed" in actions
 
     def test_items_repaired_counter_in_sync_state(
         self,
@@ -709,7 +712,7 @@ class TestDrainQueueWithRepair:
         assert len(validation_queue_items) == 0
         assert sync_state_items[0]["items_checked"] == 4
         assert sync_state_items[0]["items_valid"] == 1
-        assert sync_state_items[0]["items_repaired"] == 1
+        assert sync_state_items[0]["items_repaired"] == 2  # 1 repaired + 1 deleted
         # "gone.fits" should be deleted from manifest
         filepaths = {item["filepath"] for item in ddb_items}
         assert "data/gone.fits" not in filepaths
@@ -770,11 +773,12 @@ class TestFullSyncState:
 
 
 class TestReconciliationScaffold:
-    """Tests for reconciliation handler scaffold (AC #7)."""
+    """Tests for reconciliation handler basics (AC #7, #11)."""
 
     @pytest.fixture(autouse=True)
-    def setup(self, monkeypatch, mock_sync_state_table):
+    def setup(self, monkeypatch, mock_sync_state_table, mock_ddb_table):
         monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
+        monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
 
     def test_creates_sync_state_and_completes(self, sync_state_items, mock_context):
         sync.lambda_handler({"mode": "reconciliation"}, mock_context)
@@ -871,3 +875,471 @@ class TestValidateStatKeys:
     def test_rejects_key_with_special_chars(self):
         with pytest.raises(ValueError, match="Invalid stat key"):
             sync._validate_stat_keys({"items-repaired": 0})
+
+
+class TestReconciliation:
+    """Tests for reconciliation sweep (Story 3.2)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, mock_ddb_table, mock_sync_state_table):
+        monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
+        monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
+
+    @pytest.fixture
+    def data_folder(self, create_folder, managed_folder):
+        return create_folder(parent_folder=managed_folder, name="data")
+
+    # --- Task 5: Happy path (AC #1, #2, #3, #4, #10) ---
+
+    def test_scans_and_validates_stale(self, monkeypatch, ddb_items, sync_state_items, mock_context, capture_log):
+        ddb_items.append(
+            {"filepath": "data/stale.fits", "box_file_id": "111", "download_url": "https://box.com/dl/stale"}
+        )
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "valid")
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert "last_validated" in ddb_items[0]
+        state = sync_state_items[-1]
+        assert state["status"] == "completed"
+        assert state["items_checked"] == 1
+        assert state["items_valid"] == 1
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "reconciliation_validate_valid" in actions
+
+    def test_skips_fresh_entries(self, monkeypatch, ddb_items, sync_state_items, mock_context):
+        fresh_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        ddb_items.append(
+            {
+                "filepath": "data/fresh.fits",
+                "box_file_id": "222",
+                "download_url": "https://box.com/dl/fresh",
+                "last_validated": fresh_ts,
+            }
+        )
+        validate_called = {"value": False}
+
+        def spy(url):
+            validate_called["value"] = True
+            return "valid"
+
+        monkeypatch.setattr(common, "validate_download_url", spy)
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert validate_called["value"] is False
+        assert sync_state_items[-1]["items_checked"] == 0
+
+    def test_valid_urls_get_last_validated_stamped(self, monkeypatch, ddb_items, mock_context):
+        ddb_items.append(
+            {"filepath": "data/check.fits", "box_file_id": "333", "download_url": "https://box.com/dl/check"}
+        )
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "valid")
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert "last_validated" in ddb_items[0]
+        ts = datetime.fromisoformat(ddb_items[0]["last_validated"])
+        assert ts.tzinfo is not None
+
+    def test_zero_box_api_for_valid_urls(self, monkeypatch, ddb_items, mock_context):
+        """AC #10: valid URLs only trigger Range GETs, no Box API calls."""
+        ddb_items.append(
+            {"filepath": "data/valid.fits", "box_file_id": "444", "download_url": "https://box.com/dl/valid"}
+        )
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "valid")
+        box_calls = []
+        monkeypatch.setattr(common, "get_box_client", lambda: box_calls.append("called") or MagicMock())
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert len(box_calls) == 0
+
+    # --- Task 6: Broken URL repair (AC #5, #6) ---
+
+    def test_broken_url_triggers_repair(
+        self,
+        monkeypatch,
+        ddb_items,
+        sync_state_items,
+        mock_context,
+        capture_log,
+        create_shared_file,
+        data_folder,
+        mock_box_client,
+    ):
+        ddb_items.append(
+            {"filepath": "data/broken.fits", "box_file_id": "111", "download_url": "https://box.com/dl/old"}
+        )
+        create_shared_file(parent_folder=data_folder, id="111", name="broken.fits")
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert len(ddb_items) == 1
+        assert "last_validated" in ddb_items[0]
+        assert ddb_items[0]["download_url"] != "https://box.com/dl/old"
+        assert sync_state_items[-1]["items_repaired"] == 1
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "reconciliation_validate_broken" in actions
+
+    def test_permanently_missing_deletes_manifest(
+        self, monkeypatch, ddb_items, sync_state_items, mock_context, capture_log
+    ):
+        ddb_items.append(
+            {"filepath": "data/gone.fits", "box_file_id": "999", "download_url": "https://box.com/dl/gone"}
+        )
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+        monkeypatch.setattr(common, "get_box_client", lambda: MagicMock())
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+        monkeypatch.setattr(common, "get_file", lambda client, fid: None)
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert len(ddb_items) == 0
+        assert sync_state_items[-1]["items_repaired"] == 1
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "file_not_found" in actions
+
+    def test_repair_failure_does_not_increment_repaired(
+        self, monkeypatch, ddb_items, sync_state_items, mock_context, capture_log
+    ):
+        ddb_items.append(
+            {"filepath": "data/fail.fits", "box_file_id": "999", "download_url": "https://box.com/dl/fail"}
+        )
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+
+        def exploding_client():
+            raise Exception("boom")
+
+        monkeypatch.setattr(common, "get_box_client", exploding_client)
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert sync_state_items[-1]["items_repaired"] == 0
+        assert sync_state_items[-1]["items_checked"] == 1
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "repair_failed" in actions
+
+    def test_items_repaired_counts_repaired_and_deleted(
+        self,
+        monkeypatch,
+        ddb_items,
+        sync_state_items,
+        mock_context,
+        create_shared_file,
+        data_folder,
+        mock_box_client,
+    ):
+        # One repairable, one permanently gone
+        ddb_items.append({"filepath": "data/fix.fits", "box_file_id": "100", "download_url": "https://box.com/dl/fix"})
+        ddb_items.append(
+            {"filepath": "data/gone.fits", "box_file_id": "200", "download_url": "https://box.com/dl/gone"}
+        )
+        create_shared_file(parent_folder=data_folder, id="100", name="fix.fits")
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "broken")
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+        original_get_file = common.get_file
+
+        def selective_get_file(client, fid):
+            if fid == "200":
+                return None
+            return original_get_file(client, fid)
+
+        monkeypatch.setattr(common, "get_file", selective_get_file)
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert sync_state_items[-1]["items_repaired"] == 2
+
+    # --- Task 7: Uncertain results (AC #7) ---
+
+    def test_uncertain_skips_stamping_and_logs(
+        self, monkeypatch, ddb_items, sync_state_items, mock_context, capture_log
+    ):
+        ddb_items.append(
+            {"filepath": "data/uncertain.fits", "box_file_id": "555", "download_url": "https://box.com/dl/unc"}
+        )
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "uncertain")
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert "last_validated" not in ddb_items[0]
+        assert sync_state_items[-1]["items_checked"] == 1
+        assert sync_state_items[-1]["items_repaired"] == 0
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "reconciliation_validate_uncertain" in actions
+
+    # --- Task 8: Timeout + checkpoint (AC #8, #9) ---
+
+    def test_timeout_writes_partial_state(self, monkeypatch, ddb_items, sync_state_items, mock_context, capture_log):
+        for i in range(5):
+            ddb_items.append(
+                {"filepath": f"data/file{i}.fits", "box_file_id": str(i), "download_url": f"https://box.com/dl/{i}"}
+            )
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "valid")
+
+        # Allow 2 items to process, then trigger timeout on the 3rd
+        call_count = {"n": 0}
+
+        class TimeoutContext:
+            def get_remaining_time_in_millis(self):
+                call_count["n"] += 1
+                if call_count["n"] <= 2:
+                    return 900000  # plenty of time
+                return 30000  # below 50000 threshold
+
+        sync.lambda_handler({"mode": "reconciliation"}, TimeoutContext())
+
+        # Should have partial status checkpointed at last processed item
+        state = sync_state_items[-1]
+        assert state["status"] == "partial"
+        assert "last_filepath" in state
+        assert state["last_filepath"] == "data/file1.fits"  # last item completed before timeout
+        assert state["items_checked"] == 2
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "reconciliation_timeout" in actions
+        # reconciliation_complete should NOT be logged on timeout
+        assert "reconciliation_complete" not in actions
+
+    def test_immediate_timeout_no_partial_state(self, monkeypatch, ddb_items, sync_state_items, capture_log):
+        """If timeout hits before any item is processed, no partial checkpoint is written."""
+        ddb_items.append({"filepath": "data/file0.fits", "box_file_id": "0", "download_url": "https://box.com/dl/0"})
+
+        class TimeoutContext:
+            def get_remaining_time_in_millis(self):
+                return 30000
+
+        sync.lambda_handler({"mode": "reconciliation"}, TimeoutContext())
+
+        # sync_state should exist but not be partial (no checkpoint to write)
+        state = sync_state_items[-1]
+        assert state["status"] == "running"  # never updated from initial state
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "reconciliation_timeout" in actions
+
+    def test_resume_from_checkpoint(self, monkeypatch, ddb_items, sync_state_items, mock_context, capture_log):
+        # Pre-insert a partial checkpoint
+        sync_state_items.append(
+            {
+                "sync_id": "reconciliation-2026-03-16T12:00:00",
+                "mode": "reconciliation",
+                "status": "partial",
+                "started_at": "2026-03-16T12:00:00+00:00",
+                "last_filepath": "data/file2.fits",
+                "items_checked": 2,
+                "items_valid": 2,
+                "items_repaired": 0,
+                "expires_at": 9999999999,
+            }
+        )
+        # Add items — only items after "data/file2.fits" should be processed
+        for i in range(5):
+            ddb_items.append(
+                {"filepath": f"data/file{i}.fits", "box_file_id": str(i), "download_url": f"https://box.com/dl/{i}"}
+            )
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "valid")
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "reconciliation_resume" in actions
+        # The new sync state (last item) should reflect only items after checkpoint
+        new_state = sync_state_items[-1]
+        assert new_state["status"] == "completed"
+        assert new_state["items_checked"] == 2  # file3 and file4
+
+    def test_invalid_checkpoint_falls_back(self, monkeypatch, ddb_items, sync_state_items, mock_context, capture_log):
+        # Partial checkpoint with filepath that doesn't exist in manifest
+        sync_state_items.append(
+            {
+                "sync_id": "reconciliation-2026-03-16T12:00:00",
+                "mode": "reconciliation",
+                "status": "partial",
+                "started_at": "2026-03-16T12:00:00+00:00",
+                "last_filepath": "nonexistent/path.fits",
+                "items_checked": 0,
+                "expires_at": 9999999999,
+            }
+        )
+        ddb_items.append({"filepath": "data/file.fits", "box_file_id": "111", "download_url": "https://box.com/dl/111"})
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "valid")
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        # Should still process all items (mock starts from 0 when key not found)
+        new_state = sync_state_items[-1]
+        assert new_state["status"] == "completed"
+        assert new_state["items_checked"] == 1
+
+    # --- Task 9: Empty manifest ---
+
+    def test_empty_manifest_completes(self, sync_state_items, mock_context):
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        state = sync_state_items[-1]
+        assert state["status"] == "completed"
+        assert state["items_checked"] == 0
+        assert state["items_repaired"] == 0
+
+    # --- Pagination ---
+
+    def test_pagination_across_batches(self, monkeypatch, ddb_items, sync_state_items, mock_context):
+        # BATCH_SIZE is 5 in MockTable, so 7 items forces pagination
+        for i in range(7):
+            ddb_items.append(
+                {"filepath": f"data/page{i}.fits", "box_file_id": str(i), "download_url": f"https://box.com/dl/{i}"}
+            )
+        monkeypatch.setattr(common, "validate_download_url", lambda url: "valid")
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        assert sync_state_items[-1]["items_checked"] == 7
+        for item in ddb_items:
+            assert "last_validated" in item
+
+    # --- Mixed outcomes ---
+
+    def test_mixed_outcomes(
+        self,
+        monkeypatch,
+        ddb_items,
+        sync_state_items,
+        mock_context,
+        capture_log,
+        create_shared_file,
+        data_folder,
+        mock_box_client,
+    ):
+        fresh_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        # fresh (skip)
+        ddb_items.append(
+            {
+                "filepath": "data/fresh.fits",
+                "box_file_id": "10",
+                "download_url": "https://box.com/dl/fresh",
+                "last_validated": fresh_ts,
+            }
+        )
+        # valid
+        ddb_items.append({"filepath": "data/ok.fits", "box_file_id": "20", "download_url": "https://box.com/dl/ok"})
+        # broken → repaired
+        ddb_items.append({"filepath": "data/fix.fits", "box_file_id": "30", "download_url": "https://box.com/dl/fix"})
+        create_shared_file(parent_folder=data_folder, id="30", name="fix.fits")
+        # uncertain
+        ddb_items.append(
+            {"filepath": "data/maybe.fits", "box_file_id": "40", "download_url": "https://box.com/dl/maybe"}
+        )
+
+        url_outcomes = {
+            "https://box.com/dl/ok": "valid",
+            "https://box.com/dl/fix": "broken",
+            "https://box.com/dl/maybe": "uncertain",
+        }
+        monkeypatch.setattr(common, "validate_download_url", lambda url: url_outcomes[url])
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+
+        sync.lambda_handler({"mode": "reconciliation"}, mock_context)
+
+        state = sync_state_items[-1]
+        assert state["items_checked"] == 3  # ok, fix, maybe (fresh skipped)
+        assert state["items_valid"] == 1
+        assert state["items_repaired"] == 1
+
+
+class TestPartialSyncState:
+    """Tests for _partial_sync_state helper."""
+
+    def test_writes_partial_with_checkpoint(self, mock_sync_state_table, sync_state_items):
+        sync_id = sync._create_sync_state(mock_sync_state_table, "reconciliation")
+
+        sync._partial_sync_state(
+            mock_sync_state_table,
+            sync_id,
+            "data/checkpoint.fits",
+            {"items_checked": 5, "items_valid": 3, "items_repaired": 1},
+        )
+
+        state = sync_state_items[0]
+        assert state["status"] == "partial"
+        assert state["last_filepath"] == "data/checkpoint.fits"
+        assert state["items_checked"] == 5
+        assert state["items_valid"] == 3
+        assert state["items_repaired"] == 1
+
+
+class TestFindReconciliationCheckpoint:
+    """Tests for _find_reconciliation_checkpoint helper."""
+
+    def test_returns_none_when_no_partial(self, mock_sync_state_table, sync_state_items):
+        # Add a completed reconciliation — should not be returned
+        sync_state_items.append(
+            {
+                "sync_id": "reconciliation-2026-03-16T12:00:00",
+                "mode": "reconciliation",
+                "status": "completed",
+                "started_at": "2026-03-16T12:00:00+00:00",
+            }
+        )
+        result = sync._find_reconciliation_checkpoint(mock_sync_state_table)
+        assert result is None
+
+    def test_returns_last_filepath_from_partial(self, mock_sync_state_table, sync_state_items):
+        sync_state_items.append(
+            {
+                "sync_id": "reconciliation-2026-03-16T12:00:00",
+                "mode": "reconciliation",
+                "status": "partial",
+                "started_at": "2026-03-16T12:00:00+00:00",
+                "last_filepath": "data/resume.fits",
+            }
+        )
+        result = sync._find_reconciliation_checkpoint(mock_sync_state_table)
+        assert result == "data/resume.fits"
+
+    def test_returns_most_recent_partial(self, mock_sync_state_table, sync_state_items):
+        sync_state_items.append(
+            {
+                "sync_id": "reconciliation-2026-03-15T12:00:00",
+                "mode": "reconciliation",
+                "status": "partial",
+                "started_at": "2026-03-15T12:00:00+00:00",
+                "last_filepath": "data/old.fits",
+            }
+        )
+        sync_state_items.append(
+            {
+                "sync_id": "reconciliation-2026-03-16T12:00:00",
+                "mode": "reconciliation",
+                "status": "partial",
+                "started_at": "2026-03-16T12:00:00+00:00",
+                "last_filepath": "data/new.fits",
+            }
+        )
+        result = sync._find_reconciliation_checkpoint(mock_sync_state_table)
+        assert result == "data/new.fits"
+
+    def test_ignores_non_reconciliation_partial(self, mock_sync_state_table, sync_state_items):
+        sync_state_items.append(
+            {
+                "sync_id": "drain-queue-2026-03-16T12:00:00",
+                "mode": "drain-queue",
+                "status": "partial",
+                "started_at": "2026-03-16T12:00:00+00:00",
+                "last_filepath": "data/drain.fits",
+            }
+        )
+        result = sync._find_reconciliation_checkpoint(mock_sync_state_table)
+        assert result is None

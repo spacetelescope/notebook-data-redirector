@@ -68,6 +68,46 @@ def _complete_sync_state(sync_state_table, sync_id, stats):
     )
 
 
+def _partial_sync_state(sync_state_table, sync_id, last_filepath, stats):
+    """Update sync state record to partial with checkpoint."""
+    _validate_stat_keys(stats)
+    expr_parts = ["#s = :status", "last_filepath = :lfp"]
+    names = {"#s": "status"}
+    values = {
+        ":status": "partial",
+        ":lfp": last_filepath,
+    }
+    for i, (key, val) in enumerate(stats.items()):
+        placeholder = f":stat{i}"
+        expr_parts.append(f"{key} = {placeholder}")
+        values[placeholder] = val
+
+    sync_state_table.update_item(
+        Key={"sync_id": sync_id},
+        UpdateExpression="SET " + ", ".join(expr_parts),
+        ExpressionAttributeNames=names,
+        ExpressionAttributeValues=values,
+    )
+
+
+def _find_reconciliation_checkpoint(sync_state_table):
+    """Find last_filepath from the most recent partial reconciliation."""
+    try:
+        response = sync_state_table.scan()
+        partial_records = [
+            item
+            for item in response.get("Items", [])
+            if item.get("mode") == "reconciliation" and item.get("status") == "partial"
+        ]
+        if not partial_records:
+            return None
+        latest = max(partial_records, key=lambda x: x.get("started_at", ""))
+        return latest.get("last_filepath")
+    except Exception as e:
+        common.log_action("WARNING", "sync", "checkpoint_lookup_failed", error_type=type(e).__name__)
+        return None
+
+
 def _repair_broken_url(filepath, manifest_item, manifest_table):
     """Attempt to repair a broken Box download URL.
 
@@ -97,13 +137,13 @@ def _repair_broken_url(filepath, manifest_item, manifest_table):
         item["last_validated"] = datetime.now(timezone.utc).isoformat()
         manifest_table.put_item(Item=item)
 
-        common.log_action("INFO", "sync", "drain_repair_success", filepath=filepath, box_file_id=box_file_id)
+        common.log_action("INFO", "sync", "repair_success", filepath=filepath, box_file_id=box_file_id)
         return "repaired"
     except Exception as e:
         common.log_action(
             "WARNING",
             "sync",
-            "drain_repair_failed",
+            "repair_failed",
             filepath=filepath,
             box_file_id=manifest_item.get("box_file_id"),
             error_type=type(e).__name__,
@@ -168,7 +208,7 @@ def _drain_queue(context):
             elif result == "broken":
                 common.log_action("WARNING", "sync", "drain_validate_broken", filepath=filepath)
                 repair_result = _repair_broken_url(filepath, manifest_item, manifest_table)
-                if repair_result == "repaired":
+                if repair_result in ("repaired", "deleted"):
                     items_repaired += 1
             else:
                 common.log_action("WARNING", "sync", "drain_validate_uncertain", filepath=filepath)
@@ -196,8 +236,8 @@ def _drain_queue(context):
 
 
 def _reconciliation(context):
-    # context used for timeout checks when reconciliation logic is added (Story 3.2)
     sync_state_table = common.get_sync_state_table()
+    manifest_table = common.get_ddb_table()
 
     try:
         sync_id = _create_sync_state(sync_state_table, "reconciliation")
@@ -207,16 +247,105 @@ def _reconciliation(context):
 
     common.log_action("INFO", "sync", "reconciliation_start")
 
-    # Reconciliation logic is implemented in Story 3.2.
-    # This scaffold creates sync state and completes immediately.
+    # Check for partial checkpoint from a previous run
+    checkpoint_filepath = _find_reconciliation_checkpoint(sync_state_table)
+
+    items_checked = 0
+    items_valid = 0
+    items_repaired = 0
+    last_processed_filepath = None
+
+    scan_kwargs = {}
+    if checkpoint_filepath:
+        scan_kwargs["ExclusiveStartKey"] = {"filepath": checkpoint_filepath}
+        common.log_action("INFO", "sync", "reconciliation_resume", last_filepath=checkpoint_filepath)
+
+    try:
+        scan_response = manifest_table.scan(**scan_kwargs)
+    except Exception:
+        if checkpoint_filepath:
+            common.log_action("WARNING", "sync", "checkpoint_resume_failed", last_filepath=checkpoint_filepath)
+            scan_response = manifest_table.scan()
+        else:
+            raise
+
+    while True:
+        for item in scan_response["Items"]:
+            # Check timeout budget
+            if context.get_remaining_time_in_millis() < 50000:
+                common.log_action("INFO", "sync", "reconciliation_timeout", items_checked=items_checked)
+                if sync_id is not None and last_processed_filepath is not None:
+                    try:
+                        _partial_sync_state(
+                            sync_state_table,
+                            sync_id,
+                            last_processed_filepath,
+                            {
+                                "items_checked": items_checked,
+                                "items_valid": items_valid,
+                                "items_repaired": items_repaired,
+                            },
+                        )
+                    except Exception as e:
+                        common.log_action(
+                            "WARNING",
+                            "sync",
+                            "sync_state_partial_failed",
+                            error_type=type(e).__name__,
+                        )
+                return
+
+            filepath = item["filepath"]
+
+            # Skip fresh entries
+            if not common.is_stale(item.get("last_validated")):
+                last_processed_filepath = filepath
+                continue
+
+            # Validate URL
+            result = common.validate_download_url(item["download_url"])
+            items_checked += 1
+
+            if result == "valid":
+                manifest_table.update_item(
+                    Key={"filepath": filepath},
+                    UpdateExpression="SET last_validated = :ts",
+                    ExpressionAttributeValues={":ts": datetime.now(timezone.utc).isoformat()},
+                )
+                items_valid += 1
+                common.log_action("INFO", "sync", "reconciliation_validate_valid", filepath=filepath)
+            elif result == "broken":
+                common.log_action("WARNING", "sync", "reconciliation_validate_broken", filepath=filepath)
+                repair_result = _repair_broken_url(filepath, item, manifest_table)
+                if repair_result in ("repaired", "deleted"):
+                    items_repaired += 1
+            else:
+                common.log_action("WARNING", "sync", "reconciliation_validate_uncertain", filepath=filepath)
+
+            last_processed_filepath = filepath
+        else:
+            # for-loop completed without break — check for more pages
+            if scan_response.get("LastEvaluatedKey"):
+                scan_response = manifest_table.scan(ExclusiveStartKey=scan_response["LastEvaluatedKey"])
+                continue
+            break
+        break  # for-loop was broken (timeout) — exit while
 
     if sync_id is not None:
         try:
-            _complete_sync_state(sync_state_table, sync_id, {"items_checked": 0, "items_repaired": 0})
+            _complete_sync_state(
+                sync_state_table,
+                sync_id,
+                {
+                    "items_checked": items_checked,
+                    "items_valid": items_valid,
+                    "items_repaired": items_repaired,
+                },
+            )
         except Exception as e:
             common.log_action("WARNING", "sync", "sync_state_complete_failed", error_type=type(e).__name__)
 
-    common.log_action("INFO", "sync", "reconciliation_complete")
+    common.log_action("INFO", "sync", "reconciliation_complete", items_checked=items_checked)
 
 
 def _full_sync(context):
