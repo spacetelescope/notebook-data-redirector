@@ -18,6 +18,11 @@ BOX_FOLDER_ID = os.environ["BOX_FOLDER_ID"]
 SECRET_ROLE_ARN = os.environ["SECRET_ROLE_ARN"]
 VALIDATION_QUEUE_TABLE_NAME = os.environ.get("VALIDATION_QUEUE_TABLE_NAME", "")
 SYNC_STATE_TABLE_NAME = os.environ.get("SYNC_STATE_TABLE_NAME", "")
+# NOTE: FolderCacheTable exists in DDB but is not currently used. Folder sharing
+# state is cached in-memory (_folder_sharing_cache) which is sufficient since each
+# Lambda invocation processes many files sharing the same ancestor folders. A future
+# improvement could persist folder sharing state to DDB so it survives across
+# invocations, reducing Box API calls when multiple Lambdas check the same folders.
 FOLDER_CACHE_TABLE_NAME = os.environ.get("FOLDER_CACHE_TABLE_NAME", "")
 EVENT_DEDUP_TABLE_NAME = os.environ.get("EVENT_DEDUP_TABLE_NAME", "")
 WEBHOOK_QUEUE_TABLE_NAME = os.environ.get("WEBHOOK_QUEUE_TABLE_NAME", "")
@@ -152,6 +157,7 @@ def get_sync_state_table():
 
 
 def get_folder_cache_table():
+    # Currently unused — see note on FOLDER_CACHE_TABLE_NAME above.
     return boto3.resource("dynamodb").Table(FOLDER_CACHE_TABLE_NAME)
 
 
@@ -463,6 +469,47 @@ def iterate_files(folder, shared=False):
         else:
             # unclear why pytest reports this break is never tested...
             break
+
+
+def repair_broken_url(filepath, manifest_item, manifest_table, caller="repair"):
+    """Attempt to repair a broken Box download URL.
+
+    Returns "repaired", "deleted", or "failed".
+    """
+    try:
+        client = get_box_client()
+        box_file_id = manifest_item["box_file_id"]
+        file = with_box_retry(get_file, client, box_file_id)
+
+        if file is None:
+            manifest_table.delete_item(Key={"filepath": filepath})
+            log_action("WARNING", caller, "file_not_found", filepath=filepath, box_file_id=box_file_id)
+            return "deleted"
+
+        file = with_box_retry(create_shared_link, client, file, access="open", allow_download=True)
+
+        # Ensure ancestor folders are correctly shared (best-effort)
+        try:
+            ensure_folder_shared(client, file)
+        except Exception as e:
+            log_action("WARNING", caller, "folder_sharing_check_failed", filepath=filepath, error_type=type(e).__name__)
+
+        item = make_ddb_item(file)
+        item["last_validated"] = datetime.now(timezone.utc).isoformat()
+        manifest_table.put_item(Item=item)
+
+        log_action("INFO", caller, "repair_success", filepath=filepath, box_file_id=box_file_id)
+        return "repaired"
+    except Exception as e:
+        log_action(
+            "WARNING",
+            caller,
+            "repair_failed",
+            filepath=filepath,
+            box_file_id=manifest_item.get("box_file_id"),
+            error_type=type(e).__name__,
+        )
+        return "failed"
 
 
 def _get_secret():

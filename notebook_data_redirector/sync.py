@@ -11,14 +11,11 @@ MAX_CHAIN_DEPTH = 10  # ~2.5 hours of processing (10 x 15-min Lambda)
 
 
 def lambda_handler(event, context):
-    mode = event.get("mode", "drain-queue")
+    mode = event.get("mode")
     common.log_action("INFO", "sync", "sync_start", mode=mode)
 
     if mode == "full-sync":
         _full_sync(context, event)
-        return
-    elif mode == "drain-queue":
-        _drain_queue(context)
         return
     elif mode == "reconciliation":
         _reconciliation(context)
@@ -237,133 +234,6 @@ def _fail_sync_state(sync_state_table, sync_id):
     )
 
 
-def _repair_broken_url(filepath, manifest_item, manifest_table):
-    """Attempt to repair a broken Box download URL.
-
-    Returns "repaired", "deleted", or "failed".
-    """
-    try:
-        client = common.get_box_client()
-        box_file_id = manifest_item["box_file_id"]
-        file = common.with_box_retry(common.get_file, client, box_file_id)
-
-        if file is None:
-            manifest_table.delete_item(Key={"filepath": filepath})
-            common.log_action("WARNING", "sync", "file_not_found", filepath=filepath, box_file_id=box_file_id)
-            return "deleted"
-
-        file = common.with_box_retry(common.create_shared_link, client, file, access="open", allow_download=True)
-
-        # Ensure ancestor folders are correctly shared (best-effort)
-        try:
-            common.ensure_folder_shared(client, file)
-        except Exception as e:
-            common.log_action(
-                "WARNING", "sync", "folder_sharing_check_failed", filepath=filepath, error_type=type(e).__name__
-            )
-
-        item = common.make_ddb_item(file)
-        item["last_validated"] = datetime.now(timezone.utc).isoformat()
-        manifest_table.put_item(Item=item)
-
-        common.log_action("INFO", "sync", "repair_success", filepath=filepath, box_file_id=box_file_id)
-        return "repaired"
-    except Exception as e:
-        common.log_action(
-            "WARNING",
-            "sync",
-            "repair_failed",
-            filepath=filepath,
-            box_file_id=manifest_item.get("box_file_id"),
-            error_type=type(e).__name__,
-        )
-        return "failed"
-
-
-def _drain_queue(context):
-    queue_table = common.get_validation_queue_table()
-    manifest_table = common.get_ddb_table()
-    sync_state_table = common.get_sync_state_table()
-
-    try:
-        sync_id = _create_sync_state(sync_state_table, "drain-queue")
-    except Exception as e:
-        common.log_action("WARNING", "sync", "sync_state_init_failed", error_type=type(e).__name__)
-        sync_id = None
-
-    items_checked = 0
-    items_valid = 0
-    items_repaired = 0
-
-    # Scan queue (handle paging)
-    scan_response = queue_table.scan()
-    while True:
-        for item in scan_response["Items"]:
-            # Check timeout budget
-            if context.get_remaining_time_in_millis() < 50000:
-                common.log_action("INFO", "sync", "drain_timeout_approaching", items_checked=items_checked)
-                break
-
-            filepath = item["filepath"]
-            download_url = item["download_url"]
-
-            # Check ManifestTable for this filepath
-            manifest_result = manifest_table.get_item(Key={"filepath": filepath})
-            if "Item" not in manifest_result:
-                queue_table.delete_item(Key={"filepath": filepath})
-                common.log_action("INFO", "sync", "drain_validate_orphaned_queue_item", filepath=filepath)
-                continue
-
-            manifest_item = manifest_result["Item"]
-
-            # Check stale threshold
-            if not common.is_stale(manifest_item.get("last_validated")):
-                queue_table.delete_item(Key={"filepath": filepath})
-                continue
-
-            # Validate URL
-            result = common.validate_download_url(download_url)
-            items_checked += 1
-
-            if result == "valid":
-                # Stamp last_validated
-                manifest_table.update_item(
-                    Key={"filepath": filepath},
-                    UpdateExpression="SET last_validated = :ts",
-                    ExpressionAttributeValues={":ts": datetime.now(timezone.utc).isoformat()},
-                )
-                items_valid += 1
-                common.log_action("INFO", "sync", "drain_validate_valid", filepath=filepath)
-            elif result == "broken":
-                common.log_action("WARNING", "sync", "drain_validate_broken", filepath=filepath)
-                repair_result = _repair_broken_url(filepath, manifest_item, manifest_table)
-                if repair_result in ("repaired", "deleted"):
-                    items_repaired += 1
-            else:
-                common.log_action("WARNING", "sync", "drain_validate_uncertain", filepath=filepath)
-
-            # Always delete queue item after processing
-            queue_table.delete_item(Key={"filepath": filepath})
-        else:
-            # for-loop completed without break — check for more pages
-            if scan_response.get("LastEvaluatedKey"):
-                scan_response = queue_table.scan(ExclusiveStartKey=scan_response["LastEvaluatedKey"])
-                continue
-            break
-        break  # for-loop was broken (timeout) — exit while
-
-    # Update sync state
-    if sync_id is not None:
-        try:
-            _complete_sync_state(
-                sync_state_table,
-                sync_id,
-                {"items_checked": items_checked, "items_valid": items_valid, "items_repaired": items_repaired},
-            )
-        except Exception as e:
-            common.log_action("WARNING", "sync", "sync_state_complete_failed", error_type=type(e).__name__)
-
-
 def _reconciliation(context):
     sync_state_table = common.get_sync_state_table()
     manifest_table = common.get_ddb_table()
@@ -445,7 +315,7 @@ def _reconciliation(context):
                 common.log_action("INFO", "sync", "reconciliation_validate_valid", filepath=filepath)
             elif result == "broken":
                 common.log_action("WARNING", "sync", "reconciliation_validate_broken", filepath=filepath)
-                repair_result = _repair_broken_url(filepath, item, manifest_table)
+                repair_result = common.repair_broken_url(filepath, item, manifest_table, caller="sync")
                 if repair_result in ("repaired", "deleted"):
                     items_repaired += 1
             else:

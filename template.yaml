@@ -64,6 +64,8 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: expires_at
         Enabled: true
+      StreamSpecification:
+        StreamViewType: NEW_IMAGE
 
   SyncStateTable:
     Type: AWS::DynamoDB::Table
@@ -83,6 +85,9 @@ Resources:
         AttributeName: expires_at
         Enabled: true
 
+  # NOTE: FolderCacheTable is provisioned but not currently used by application code.
+  # Folder sharing state is cached in-memory within each Lambda invocation.
+  # A future improvement could persist this to DDB to share across invocations.
   FolderCacheTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -170,15 +175,11 @@ Resources:
       Environment:
         Variables:
           MANIFEST_TABLE_NAME: !Ref ManifestTable
-          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTable
           SYNC_STATE_TABLE_NAME: !Ref SyncStateTable
           FOLDER_CACHE_TABLE_NAME: !Ref FolderCacheTable
+          # VALIDATION_QUEUE_TABLE_NAME intentionally omitted —
+          # validation is handled by ValidationWorkerFunction via DDB Streams.
       Events:
-        DrainQueueEvent:
-          Type: Schedule
-          Properties:
-            Schedule: rate(1 hour)
-            Input: '{"mode": "drain-queue"}'
         ReconciliationEvent:
           Type: Schedule
           Properties:
@@ -211,6 +212,31 @@ Resources:
             Stream: !GetAtt WebhookQueueTable.StreamArn
             StartingPosition: LATEST
             BatchSize: 10
+            MaximumRetryAttempts: 3
+            BisectBatchOnFunctionError: true
+            MaximumRecordAgeInSeconds: 3600
+
+  ValidationWorkerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      MemorySize: 256
+      Timeout: 60
+      Handler: validation_worker.lambda_handler
+      Role: !Ref LambdaRoleARN
+      Environment:
+        Variables:
+          MANIFEST_TABLE_NAME: !Ref ManifestTable
+          VALIDATION_QUEUE_TABLE_NAME: !Ref ValidationQueueTable
+      Events:
+        ValidationQueueStream:
+          Type: DynamoDB
+          Properties:
+            Stream: !GetAtt ValidationQueueTable.StreamArn
+            StartingPosition: LATEST
+            BatchSize: 10
+            MaximumRetryAttempts: 3
+            BisectBatchOnFunctionError: true
+            MaximumRecordAgeInSeconds: 3600
 
   RedirectorFunction:
     Type: AWS::Serverless::Function
