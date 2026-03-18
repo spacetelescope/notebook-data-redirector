@@ -481,7 +481,7 @@ def mock_sync_state_table(sync_state_items):
                     attr_name = names.get(lhs, lhs)
                     item[attr_name] = values[rhs]
 
-        def scan(self):
+        def scan(self, **kwargs):
             return {"Items": list(sync_state_items)}
 
     return MockTable()
@@ -547,6 +547,8 @@ def mock_webhook_queue_table(webhook_queue_items):
 @pytest.fixture
 def mock_context():
     class MockContext:
+        function_name = "test-sync-function"
+
         def get_remaining_time_in_millis(self):
             return 900000  # 15 minutes
 

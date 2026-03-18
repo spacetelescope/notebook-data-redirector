@@ -1343,3 +1343,678 @@ class TestFindReconciliationCheckpoint:
         )
         result = sync._find_reconciliation_checkpoint(mock_sync_state_table)
         assert result is None
+
+
+class TestFullSyncCheckpoint:
+    """Tests for resumable full-sync (Story 3.3)."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, mock_ddb_table, mock_box_client, mock_sync_state_table):
+        monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
+
+    # --- Task 6: Enumeration + chunking (AC #1, #6) ---
+
+    def test_enumeration_stores_chunks(
+        self, sync_state_items, mock_context, create_shared_file, create_shared_folder, managed_folder
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        for _ in range(3):
+            create_shared_file(parent_folder=shared_folder)
+
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        # Find the main sync state record
+        main_state = next(
+            s for s in sync_state_items if s["sync_id"].startswith("full-sync-") and ":chunk:" not in s["sync_id"]
+        )
+        assert "chunk_count" in main_state
+        assert main_state["chunk_count"] >= 1
+
+    def test_chunks_cleaned_up_after_completion(
+        self, sync_state_items, mock_context, create_shared_file, create_shared_folder, managed_folder
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        create_shared_file(parent_folder=shared_folder)
+
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        # After completion, chunk items should be deleted
+        chunk_items = [s for s in sync_state_items if ":chunk:" in s.get("sync_id", "")]
+        assert len(chunk_items) == 0
+
+    def test_empty_enumeration_no_chunks(self, sync_state_items, mock_context):
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        # No files → no chunks stored
+        chunk_items = [s for s in sync_state_items if ":chunk:" in s.get("sync_id", "")]
+        assert len(chunk_items) == 0
+        main_state = next(
+            s for s in sync_state_items if s["sync_id"].startswith("full-sync-") and ":chunk:" not in s["sync_id"]
+        )
+        assert main_state["chunk_count"] == 0
+
+    # --- Task 7: Timeout + self-invocation (AC #2, #8) ---
+
+    def test_timeout_triggers_checkpoint_and_self_invoke(
+        self,
+        monkeypatch,
+        sync_state_items,
+        create_shared_file,
+        create_shared_folder,
+        managed_folder,
+        capture_log,
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        for _ in range(5):
+            create_shared_file(parent_folder=shared_folder)
+
+        call_count = {"n": 0}
+
+        class TimeoutContext:
+            function_name = "test-sync-function"
+
+            def get_remaining_time_in_millis(self):
+                call_count["n"] += 1
+                if call_count["n"] <= 2:
+                    return 900000
+                return 30000
+
+        invoke_calls = []
+
+        class MockLambdaClient:
+            def invoke(self, **kwargs):
+                invoke_calls.append(kwargs)
+                return {"StatusCode": 202}
+
+        monkeypatch.setattr("boto3.client", lambda svc: MockLambdaClient())
+
+        sync.lambda_handler({"mode": "full-sync"}, TimeoutContext())
+
+        # Should have saved partial state
+        main_state = next(
+            (s for s in sync_state_items if s["sync_id"].startswith("full-sync-") and ":chunk:" not in s["sync_id"]),
+            None,
+        )
+        assert main_state is not None
+        assert main_state["status"] == "partial"
+        assert "last_chunk_index" in main_state
+        assert "last_file_index" in main_state
+
+        # Should have invoked self
+        assert len(invoke_calls) == 1
+        payload = json.loads(invoke_calls[0]["Payload"])
+        assert payload["mode"] == "full-sync"
+        assert payload["resume"] is True
+        assert payload["chain_depth"] == 1
+        assert "sync_id" in payload
+
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "full_sync_timeout" in actions
+        assert "full_sync_self_invoke" in actions
+
+    def test_chain_depth_guard_prevents_invocation(
+        self,
+        monkeypatch,
+        sync_state_items,
+        create_shared_file,
+        create_shared_folder,
+        managed_folder,
+        mock_box_client,
+        capture_log,
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        created_files = []
+        for _ in range(3):
+            created_files.append(create_shared_file(parent_folder=shared_folder))
+
+        # Set up a sync state for resume at max chain depth
+        sync_id = "full-sync-2026-03-18T12:00:00"
+        files = [{"filepath": common.get_filepath(f), "box_file_id": f.id, "shared": True} for f in created_files]
+        sync_state_items.append(
+            {
+                "sync_id": sync_id,
+                "mode": "full-sync",
+                "status": "partial",
+                "started_at": "2026-03-18T12:00:00+00:00",
+                "chunk_count": 1,
+                "last_chunk_index": 0,
+                "last_file_index": -1,
+                "chain_depth": 9,
+                "items_checked": 0,
+                "items_valid": 0,
+                "items_repaired": 0,
+                "expires_at": 9999999999,
+            }
+        )
+        sync_state_items.append(
+            {
+                "sync_id": f"{sync_id}:chunk:0",
+                "files": files,
+                "expires_at": 9999999999,
+            }
+        )
+
+        # Allow one file to process, then timeout
+        call_count = {"n": 0}
+
+        class TimeoutContext:
+            function_name = "test-sync-function"
+
+            def get_remaining_time_in_millis(self):
+                call_count["n"] += 1
+                if call_count["n"] <= 1:
+                    return 900000
+                return 30000
+
+        invoke_calls = []
+
+        class MockLambdaClient:
+            def invoke(self, **kwargs):
+                invoke_calls.append(kwargs)
+
+        monkeypatch.setattr("boto3.client", lambda svc: MockLambdaClient())
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+
+        sync.lambda_handler(
+            {"mode": "full-sync", "sync_id": sync_id, "resume": True, "chain_depth": 9},
+            TimeoutContext(),
+        )
+
+        # Should NOT self-invoke
+        assert len(invoke_calls) == 0
+
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "full_sync_chain_depth_exceeded" in actions
+
+        # Should mark failed and clean up chunks
+        main_state = next(s for s in sync_state_items if s["sync_id"] == sync_id)
+        assert main_state["status"] == "failed"
+        chunk_items = [s for s in sync_state_items if ":chunk:" in s.get("sync_id", "")]
+        assert len(chunk_items) == 0
+
+    def test_self_invoke_payload_correct(
+        self,
+        monkeypatch,
+        sync_state_items,
+        create_shared_file,
+        create_shared_folder,
+        managed_folder,
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        for _ in range(3):
+            create_shared_file(parent_folder=shared_folder)
+
+        call_count = {"n": 0}
+
+        class TimeoutContext:
+            function_name = "test-sync-function"
+
+            def get_remaining_time_in_millis(self):
+                call_count["n"] += 1
+                if call_count["n"] <= 1:
+                    return 900000
+                return 30000
+
+        invoke_calls = []
+
+        class MockLambdaClient:
+            def invoke(self, **kwargs):
+                invoke_calls.append(kwargs)
+                return {"StatusCode": 202}
+
+        monkeypatch.setattr("boto3.client", lambda svc: MockLambdaClient())
+
+        sync.lambda_handler({"mode": "full-sync"}, TimeoutContext())
+
+        assert len(invoke_calls) == 1
+        assert invoke_calls[0]["InvocationType"] == "Event"
+        payload = json.loads(invoke_calls[0]["Payload"])
+        assert payload["mode"] == "full-sync"
+        assert payload["resume"] is True
+        assert payload["chain_depth"] == 1
+        assert payload["sync_id"].startswith("full-sync-")
+
+    # --- Task 8: Resume from checkpoint (AC #3, #4, #7) ---
+
+    def test_resume_loads_chunks_and_skips_to_checkpoint(
+        self,
+        monkeypatch,
+        sync_state_items,
+        ddb_items,
+        mock_context,
+        capture_log,
+        mock_box_client,
+        create_shared_file,
+        create_shared_folder,
+        managed_folder,
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        files = []
+        for i in range(5):
+            f = create_shared_file(parent_folder=shared_folder)
+            files.append({"filepath": common.get_filepath(f), "box_file_id": f.id, "shared": True})
+
+        sync_id = "full-sync-2026-03-18T12:00:00"
+        sync_state_items.append(
+            {
+                "sync_id": sync_id,
+                "mode": "full-sync",
+                "status": "partial",
+                "started_at": "2026-03-18T12:00:00+00:00",
+                "chunk_count": 1,
+                "last_chunk_index": 0,
+                "last_file_index": 1,
+                "chain_depth": 1,
+                "items_checked": 2,
+                "items_valid": 2,
+                "items_repaired": 0,
+                "expires_at": 9999999999,
+            }
+        )
+        sync_state_items.append(
+            {
+                "sync_id": f"{sync_id}:chunk:0",
+                "files": files,
+                "expires_at": 9999999999,
+            }
+        )
+
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+
+        sync.lambda_handler(
+            {"mode": "full-sync", "sync_id": sync_id, "resume": True, "chain_depth": 2},
+            mock_context,
+        )
+
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "full_sync_resume" in actions
+        assert "full_sync_complete" in actions
+
+        # Should have processed remaining 3 files (indices 2, 3, 4)
+        main_state = next(s for s in sync_state_items if s["sync_id"] == sync_id)
+        assert main_state["status"] == "completed"
+        assert main_state["items_checked"] == 5  # 2 from before + 3 new
+
+    def test_resume_processes_remaining_files(
+        self,
+        monkeypatch,
+        sync_state_items,
+        ddb_items,
+        mock_context,
+        mock_box_client,
+        create_shared_file,
+        create_shared_folder,
+        managed_folder,
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        created_files = []
+        for _ in range(4):
+            f = create_shared_file(parent_folder=shared_folder)
+            created_files.append(f)
+
+        files = [{"filepath": common.get_filepath(f), "box_file_id": f.id, "shared": True} for f in created_files]
+
+        sync_id = "full-sync-2026-03-18T12:00:00"
+        sync_state_items.append(
+            {
+                "sync_id": sync_id,
+                "mode": "full-sync",
+                "status": "partial",
+                "started_at": "2026-03-18T12:00:00+00:00",
+                "chunk_count": 1,
+                "last_chunk_index": 0,
+                "last_file_index": 1,
+                "chain_depth": 0,
+                "items_checked": 2,
+                "items_valid": 2,
+                "items_repaired": 0,
+                "expires_at": 9999999999,
+            }
+        )
+        sync_state_items.append(
+            {
+                "sync_id": f"{sync_id}:chunk:0",
+                "files": files,
+                "expires_at": 9999999999,
+            }
+        )
+
+        # Pre-populate DDB with entries from the "previous invocation" (files 0 and 1)
+        for f in created_files[:2]:
+            ddb_items.append(common.make_ddb_item(f))
+
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+
+        sync.lambda_handler(
+            {"mode": "full-sync", "sync_id": sync_id, "resume": True, "chain_depth": 1},
+            mock_context,
+        )
+
+        # All 4 files should now be in DDB (2 pre-existing + 2 newly processed)
+        assert len(ddb_items) == 4
+        file_ids = {item["box_file_id"] for item in ddb_items}
+        for f in created_files:
+            assert f.id in file_ids
+
+    def test_invalid_checkpoint_falls_back_to_fresh(
+        self,
+        monkeypatch,
+        sync_state_items,
+        ddb_items,
+        mock_context,
+        capture_log,
+    ):
+        sync_id = "full-sync-2026-03-18T12:00:00"
+        # Sync state exists but chunks are missing
+        sync_state_items.append(
+            {
+                "sync_id": sync_id,
+                "mode": "full-sync",
+                "status": "partial",
+                "started_at": "2026-03-18T12:00:00+00:00",
+                "chunk_count": 2,
+                "last_chunk_index": 0,
+                "last_file_index": 5,
+                "chain_depth": 1,
+                "items_checked": 0,
+                "expires_at": 9999999999,
+            }
+        )
+        # No chunk items → chunks missing
+
+        sync.lambda_handler(
+            {"mode": "full-sync", "sync_id": sync_id, "resume": True, "chain_depth": 2},
+            mock_context,
+        )
+
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "full_sync_chunks_missing" in actions
+        assert "full_sync_enumerating" in actions
+        assert "full_sync_complete" in actions
+
+    # --- Task 9: Orphan detection across chain (AC #5, #9, #10) ---
+
+    def test_orphan_detection_on_final_invocation(
+        self,
+        monkeypatch,
+        sync_state_items,
+        ddb_items,
+        mock_context,
+        mock_box_client,
+        create_shared_file,
+        create_shared_folder,
+        managed_folder,
+        capture_log,
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        f = create_shared_file(parent_folder=shared_folder)
+
+        # Add orphan to manifest
+        ddb_items.append(
+            {"filepath": "orphan/gone.dat", "box_file_id": "999", "download_url": "https://box.com/dl/gone"}
+        )
+
+        files = [{"filepath": common.get_filepath(f), "box_file_id": f.id, "shared": True}]
+
+        sync_id = "full-sync-2026-03-18T12:00:00"
+        sync_state_items.append(
+            {
+                "sync_id": sync_id,
+                "mode": "full-sync",
+                "status": "partial",
+                "started_at": "2026-03-18T12:00:00+00:00",
+                "chunk_count": 1,
+                "last_chunk_index": 0,
+                "last_file_index": -1,
+                "chain_depth": 0,
+                "items_checked": 0,
+                "items_valid": 0,
+                "items_repaired": 0,
+                "expires_at": 9999999999,
+            }
+        )
+        sync_state_items.append(
+            {
+                "sync_id": f"{sync_id}:chunk:0",
+                "files": files,
+                "expires_at": 9999999999,
+            }
+        )
+
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+
+        sync.lambda_handler(
+            {"mode": "full-sync", "sync_id": sync_id, "resume": True, "chain_depth": 1},
+            mock_context,
+        )
+
+        # Orphan should be deleted
+        filepaths = {item["filepath"] for item in ddb_items}
+        assert "orphan/gone.dat" not in filepaths
+
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "full_sync_orphan_detection" in actions
+        assert "full_sync_orphans_deleted" in actions
+
+    def test_fresh_entries_tracked_for_orphans_but_not_repaired(
+        self,
+        monkeypatch,
+        sync_state_items,
+        ddb_items,
+        mock_context,
+        mock_box_client,
+        create_shared_file,
+        create_shared_folder,
+        managed_folder,
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        f = create_shared_file(parent_folder=shared_folder)
+        filepath = common.get_filepath(f)
+
+        # File already in manifest with fresh last_validated
+        fresh_ts = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        ddb_items.append(
+            {
+                "filepath": filepath,
+                "box_file_id": f.id,
+                "download_url": f.shared_link["download_url"],
+                "last_validated": fresh_ts,
+            }
+        )
+
+        # Add orphan to verify it gets deleted
+        ddb_items.append(
+            {"filepath": "orphan/stale.dat", "box_file_id": "888", "download_url": "https://box.com/dl/stale"}
+        )
+
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        # Fresh file should still be in manifest (not deleted by orphan detection)
+        filepaths = {item["filepath"] for item in ddb_items}
+        assert filepath in filepaths
+        # Orphan should be deleted
+        assert "orphan/stale.dat" not in filepaths
+
+        # The fresh file's last_validated should be unchanged (wasn't re-processed)
+        fresh_item = next(i for i in ddb_items if i["filepath"] == filepath)
+        assert fresh_item["last_validated"] == fresh_ts
+
+    def test_new_file_discovered_during_processing(
+        self,
+        monkeypatch,
+        sync_state_items,
+        ddb_items,
+        mock_context,
+        mock_box_client,
+        create_shared_file,
+        create_shared_folder,
+        managed_folder,
+    ):
+        """AC #10: New files found in Box but not in ManifestTable get shared links and entries."""
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        new_file = create_shared_file(parent_folder=shared_folder)
+        # File exists in Box but NOT in DDB — should be discovered and added
+
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        assert len(ddb_items) == 1
+        assert ddb_items[0]["box_file_id"] == new_file.id
+
+
+class TestFullSyncChunkStoreFailure:
+    """Test degraded behavior when chunk storage fails."""
+
+    @pytest.fixture(autouse=True)
+    def setup(self, monkeypatch, mock_ddb_table, mock_box_client, mock_sync_state_table):
+        monkeypatch.setattr(common, "get_ddb_table", lambda: mock_ddb_table)
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "get_sync_state_table", lambda: mock_sync_state_table)
+
+    def test_chunk_store_failure_disables_self_invoke(
+        self,
+        monkeypatch,
+        sync_state_items,
+        ddb_items,
+        create_shared_file,
+        create_shared_folder,
+        managed_folder,
+        capture_log,
+    ):
+        shared_folder = create_shared_folder(parent_folder=managed_folder)
+        for _ in range(3):
+            create_shared_file(parent_folder=shared_folder)
+
+        # Make chunk storage fail
+        def fail_store(*args, **kwargs):
+            raise RuntimeError("DDB write failed")
+
+        monkeypatch.setattr(sync, "_store_file_list_chunks", fail_store)
+
+        call_count = {"n": 0}
+
+        class TimeoutContext:
+            function_name = "test-sync-function"
+
+            def get_remaining_time_in_millis(self):
+                call_count["n"] += 1
+                if call_count["n"] <= 1:
+                    return 900000
+                return 30000
+
+        invoke_calls = []
+
+        class MockLambdaClient:
+            def invoke(self, **kwargs):
+                invoke_calls.append(kwargs)
+
+        monkeypatch.setattr("boto3.client", lambda svc: MockLambdaClient())
+
+        sync.lambda_handler({"mode": "full-sync"}, TimeoutContext())
+
+        # No self-invocation should occur
+        assert len(invoke_calls) == 0
+
+        # Files processed before timeout should still be in DDB
+        assert len(ddb_items) >= 1
+
+        log_lines = capture_log.getvalue().strip().split("\n")
+        actions = [json.loads(line)["action"] for line in log_lines]
+        assert "full_sync_chunk_store_failed" in actions
+
+
+class TestFullSyncHelpers:
+    """Tests for full-sync helper functions."""
+
+    def test_find_full_sync_checkpoint_returns_none_when_empty(self, mock_sync_state_table):
+        result = sync._find_full_sync_checkpoint(mock_sync_state_table)
+        assert result is None
+
+    def test_find_full_sync_checkpoint_returns_partial_record(self, mock_sync_state_table, sync_state_items):
+        sync_state_items.append(
+            {
+                "sync_id": "full-sync-2026-03-18T12:00:00",
+                "mode": "full-sync",
+                "status": "partial",
+                "started_at": "2026-03-18T12:00:00+00:00",
+                "chunk_count": 2,
+                "last_chunk_index": 1,
+                "last_file_index": 50,
+            }
+        )
+        result = sync._find_full_sync_checkpoint(mock_sync_state_table)
+        assert result is not None
+        assert result["sync_id"] == "full-sync-2026-03-18T12:00:00"
+
+    def test_find_full_sync_checkpoint_ignores_reconciliation(self, mock_sync_state_table, sync_state_items):
+        sync_state_items.append(
+            {
+                "sync_id": "reconciliation-2026-03-18T12:00:00",
+                "mode": "reconciliation",
+                "status": "partial",
+                "started_at": "2026-03-18T12:00:00+00:00",
+            }
+        )
+        result = sync._find_full_sync_checkpoint(mock_sync_state_table)
+        assert result is None
+
+    def test_store_and_load_chunks(self, mock_sync_state_table, sync_state_items):
+        sync_id = "full-sync-test"
+        sync_state_items.append({"sync_id": sync_id, "mode": "full-sync", "status": "running"})
+
+        file_list = [{"filepath": f"data/file{i}.dat", "box_file_id": str(i), "shared": True} for i in range(10)]
+        chunk_count = sync._store_file_list_chunks(mock_sync_state_table, sync_id, file_list)
+        assert chunk_count == 1  # 10 files < CHUNK_SIZE
+
+        loaded = sync._load_file_list_chunks(mock_sync_state_table, sync_id, chunk_count)
+        assert loaded is not None
+        assert len(loaded) == 10
+        assert loaded[0]["filepath"] == "data/file0.dat"
+
+    def test_load_chunks_returns_none_when_missing(self, mock_sync_state_table):
+        result = sync._load_file_list_chunks(mock_sync_state_table, "nonexistent", 2)
+        assert result is None
+
+    def test_cleanup_chunks_removes_all(self, mock_sync_state_table, sync_state_items):
+        sync_id = "full-sync-test"
+        sync_state_items.append({"sync_id": sync_id, "mode": "full-sync", "status": "running"})
+
+        file_list = [{"filepath": f"data/file{i}.dat", "box_file_id": str(i), "shared": True} for i in range(10)]
+        chunk_count = sync._store_file_list_chunks(mock_sync_state_table, sync_id, file_list)
+
+        sync._cleanup_chunks(mock_sync_state_table, sync_id, chunk_count)
+
+        chunk_items = [s for s in sync_state_items if ":chunk:" in s.get("sync_id", "")]
+        assert len(chunk_items) == 0
+
+    def test_full_sync_partial_state_writes_checkpoint(self, mock_sync_state_table, sync_state_items):
+        sync_id = sync._create_sync_state(mock_sync_state_table, "full-sync")
+
+        sync._full_sync_partial_state(
+            mock_sync_state_table,
+            sync_id,
+            2,
+            150,
+            3,
+            {"items_checked": 100, "items_valid": 95, "items_repaired": 5},
+        )
+
+        state = sync_state_items[0]
+        assert state["status"] == "partial"
+        assert state["last_chunk_index"] == 2
+        assert state["last_file_index"] == 150
+        assert state["chain_depth"] == 3
+        assert state["items_checked"] == 100
+
+    def test_fail_sync_state(self, mock_sync_state_table, sync_state_items):
+        sync_id = sync._create_sync_state(mock_sync_state_table, "full-sync")
+
+        sync._fail_sync_state(mock_sync_state_table, sync_id)
+
+        assert sync_state_items[0]["status"] == "failed"
