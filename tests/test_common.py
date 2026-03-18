@@ -428,7 +428,41 @@ def test_iterate_files(create_folder, create_file, managed_folder):
     assert len(results_files) == len(files)
     assert set(results_files) == files
 
-    # TODO: Test a mix of shared folders
+
+def test_iterate_files_fixes_unshared_folders(create_folder, create_file, managed_folder):
+    """iterate_files should auto-share unshared folders and yield their files as shared."""
+    shared_folder = create_folder(
+        parent_folder=managed_folder,
+        shared_link={
+            "effective_access": "open",
+            "effective_permission": "can_download",
+            "download_url": None,
+        },
+    )
+    unshared_folder = create_folder(parent_folder=managed_folder)
+    assert unshared_folder.shared_link is None
+
+    shared_file = create_file(parent_folder=shared_folder)
+    unshared_file = create_file(parent_folder=unshared_folder)
+
+    results = {item.id: shared for item, shared in common.iterate_files(managed_folder)}
+
+    # Both files should be yielded as shared — unshared folder was fixed
+    assert results[shared_file.id] is True
+    assert results[unshared_file.id] is True
+    # The folder's shared_link should have been set by the fix
+    assert unshared_folder.shared_link is not None
+
+
+def test_iterate_files_fix_folder_sharing_failure_graceful(create_folder, create_file, managed_folder, monkeypatch):
+    """If fixing folder sharing fails, files are yielded as unshared (graceful degradation)."""
+    broken_folder = create_folder(parent_folder=managed_folder)
+    monkeypatch.setattr(broken_folder, "create_shared_link", MagicMock(side_effect=Exception("API error")))
+    file_in_broken = create_file(parent_folder=broken_folder)
+
+    results = {item.id: shared for item, shared in common.iterate_files(managed_folder)}
+
+    assert results[file_in_broken.id] is False
 
 
 class TestValidateDownloadUrl:

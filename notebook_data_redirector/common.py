@@ -458,10 +458,21 @@ def iterate_files(folder, shared=False):
         for item in folder.get_items(limit=GET_ITEMS_LIMIT, offset=offset, fields=GET_ITEMS_FIELDS):
             count += 1
             if item.object_type == "folder":
-                # Here we're recursively calling iterate_files on a nested folder and
-                # receiving an iterator that contains all of its files.  "yield from"
-                # will yield each value from that iterator in turn.
-                yield from iterate_files(item, shared=shared or is_box_object_public(item))
+                folder_shared = shared or is_box_object_public(item)
+                if not folder_shared:
+                    try:
+                        with_box_retry(item.create_shared_link, access="open", allow_download=True)
+                        log_action("INFO", "sync", "fix_folder_sharing", folder_id=item.id)
+                        folder_shared = True
+                    except Exception as e:
+                        log_action(
+                            "WARNING",
+                            "sync",
+                            "fix_folder_sharing_failed",
+                            folder_id=item.id,
+                            error_type=type(e).__name__,
+                        )
+                yield from iterate_files(item, shared=folder_shared)
             elif item.object_type == "file":
                 yield item, shared
         if count >= GET_ITEMS_LIMIT:
