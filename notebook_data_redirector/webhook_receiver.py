@@ -7,14 +7,21 @@ STATUS_SUCCESS = {"statusCode": 200}
 
 
 def _share_and_store_if_public(client, ddb, file):
-    """Check parent sharing, share file if needed, store in manifest if public."""
-    parent_public = common.is_any_parent_public(client, file)
-    if (not common.is_box_object_public(file)) and parent_public:
+    """Ensure parent folders are shared, share file, store in manifest."""
+    try:
+        common.ensure_folder_shared(client, file)
+    except Exception as e:
+        common.log_action(
+            "WARNING",
+            "webhook_receiver",
+            "folder_sharing_check_failed",
+            filepath=common.get_filepath(file),
+            error_type=type(e).__name__,
+        )
+    if not common.is_box_object_public(file):
         file = common.with_box_retry(common.create_shared_link, client, file, access="open", allow_download=True)
-    if common.is_box_object_public(file):
-        common.put_file_item(ddb, file)
-        return file, True
-    return file, False
+    common.put_file_item(ddb, file)
+    return file, True
 
 
 def _handle_file_event(trigger, box_id):
@@ -88,17 +95,7 @@ def _handle_file_event(trigger, box_id):
         common.log_action("WARNING", "webhook_receiver", "file_missing", box_file_id=box_id)
         return
 
-    parent_public = common.is_any_parent_public(client, file)
-    if (not common.is_box_object_public(file)) and parent_public:
-        file = common.with_box_retry(common.create_shared_link, client, file, access="open", allow_download=True)
-    if (common.is_box_object_public(file)) and (not parent_public):
-        file = common.with_box_retry(common.remove_shared_link, client, file)
-
-    if common.is_box_object_public(file):
-        common.put_file_item(ddb, file)
-    else:
-        common.delete_file_item(ddb, file)
-
+    file, stored = _share_and_store_if_public(client, ddb, file)
     common.log_action("INFO", "webhook_receiver", "file_event_processed", trigger=trigger, box_file_id=box_id)
 
 

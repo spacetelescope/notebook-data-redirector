@@ -76,11 +76,12 @@ class TestWebhookReceiver:
         managed_folder,
         webhook_queue_items,
     ):
-        # due to changes in the BOX API, sharing a file directly will result in the shared link being deleted in the webhook receiver
+        # File SHARED_LINK.CREATED: parent folders are auto-shared, file is shared and stored
         file = create_shared_file()
         event = create_webhook_event("SHARED_LINK.CREATED", file)
         handle_event(event)
-        assert len(ddb_items) == 0
+        assert len(ddb_items) == 1
+        assert ddb_items[0]["box_file_id"] == file.id
 
         # folder SHARED_LINK.CREATED now queues a work item (and checks/fixes sharing)
         folder = create_shared_folder(parent_folder=managed_folder)
@@ -102,26 +103,18 @@ class TestWebhookReceiver:
         create_shared_folder,
         webhook_queue_items,
     ):
-        # due to changes in the BOX API, sharing a file directly will result in the shared link being deleted in the webhook receiver
+        # File SHARED_LINK.UPDATED: parent folders are auto-shared, file is shared and stored
         file = create_shared_file()
-        event = create_webhook_event("SHARED_LINK.UPDATED", file)
-        handle_event(event)
-        assert len(ddb_items) == 0
-
-        # so we must create the file in a shared folder first
-        box_files.remove(file)
-        folder = create_shared_folder(parent_folder=managed_folder)
-        file = create_shared_file(id=file.id, parent_folder=folder)
         event = create_webhook_event("SHARED_LINK.UPDATED", file)
         handle_event(event)
         assert len(ddb_items) == 1
         assert ddb_items[0]["box_file_id"] == file.id
 
         # folder SHARED_LINK.UPDATED now queues a work item (and checks/fixes sharing)
+        ddb_items.clear()
         box_files.remove(file)
-        box_folders.remove(folder)
         folder = create_shared_folder(
-            id=folder.id, parent_folder=managed_folder, shared_link=create_shared_link(effective_access="company")
+            parent_folder=managed_folder, shared_link=create_shared_link(effective_access="company")
         )
         event = create_webhook_event("SHARED_LINK.UPDATED", folder)
         handle_event(event)
@@ -129,11 +122,12 @@ class TestWebhookReceiver:
         assert webhook_queue_items[0]["folder_id"] == folder.id
 
     def test_shared_link_deleted(self, create_webhook_event, create_file, ddb_items, managed_folder):
+        # SHARED_LINK.DELETED: auto-correct by re-sharing the file and fixing parent folders
         file = create_file(parent_folder=managed_folder)
-        ddb_items.append({"filepath": common.get_filepath(file)})
         event = create_webhook_event("SHARED_LINK.DELETED", file)
         handle_event(event)
-        assert len(ddb_items) == 0
+        assert len(ddb_items) == 1
+        assert ddb_items[0]["box_file_id"] == file.id
 
     def test_file_trashed(self, create_webhook_event, create_shared_file, ddb_items, box_files):
         file = create_shared_file()
@@ -510,14 +504,27 @@ class TestFileLevelTriage:
         assert len(ddb_items) == 1
         assert ddb_items[0]["box_file_id"] == file.id
 
-    def test_existing_shared_link_deleted_still_works(self, create_file, ddb_items, managed_folder):
-        """Regression: SHARED_LINK.DELETED still removes manifest entry."""
+    def test_existing_shared_link_deleted_auto_corrected(self, create_file, ddb_items, managed_folder):
+        """SHARED_LINK.DELETED auto-corrects: re-shares file and fixes parent folders."""
         file = create_file(parent_folder=managed_folder)
-        ddb_items.append({"filepath": common.get_filepath(file), "box_file_id": file.id, "download_url": "https://x"})
         event = self._make_event("SHARED_LINK.DELETED", file.id)
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
-        assert len(ddb_items) == 0
+        assert len(ddb_items) == 1
+        assert ddb_items[0]["box_file_id"] == file.id
+
+    def test_file_uploaded_unshared_folder_auto_corrected(self, ddb_items, create_file, create_folder, managed_folder):
+        """FILE.UPLOADED to unshared folder: folder sharing is fixed, file is shared and stored."""
+        unshared_folder = create_folder(parent_folder=managed_folder)
+        assert unshared_folder.shared_link is None
+        file = create_file(parent_folder=unshared_folder)
+        event = self._make_event("FILE.UPLOADED", file.id)
+        result = webhook_receiver.lambda_handler(event, {})
+        assert result["statusCode"] == 200
+        assert len(ddb_items) == 1
+        assert ddb_items[0]["box_file_id"] == file.id
+        # Parent folder should have been auto-shared
+        assert unshared_folder.shared_link is not None
 
 
 class TestFolderQueueWrite:
