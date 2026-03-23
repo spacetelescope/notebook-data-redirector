@@ -6,7 +6,7 @@ import boto3
 
 import common
 
-CHUNK_SIZE = 3000  # ~300KB per chunk, under DDB's 400KB item limit
+CHUNK_SIZE = 1000  # ~220KB per chunk, under DDB's 400KB item limit
 MAX_CHAIN_DEPTH = 10  # ~2.5 hours of processing (10 x 15-min Lambda)
 
 
@@ -365,6 +365,7 @@ def _full_sync(context, event=None):
     items_checked = 0
     items_valid = 0
     items_repaired = 0
+    can_resume = False
 
     if resume and sync_id:
         # Resume: load checkpoint and chunks from DDB
@@ -381,6 +382,7 @@ def _full_sync(context, event=None):
 
             file_list = _load_file_list_chunks(sync_state_table, sync_id, chunk_count)
             if file_list is not None:
+                can_resume = True
                 common.log_action(
                     "INFO",
                     "sync",
@@ -431,9 +433,11 @@ def _full_sync(context, event=None):
         common.log_action("INFO", "sync", "full_sync_enumerated", count=len(file_list))
 
         # Store chunks for resume capability
+        can_resume = False
         if sync_id is not None:
             try:
                 chunk_count = _store_file_list_chunks(sync_state_table, sync_id, file_list)
+                can_resume = True
             except Exception as e:
                 common.log_action(
                     "ERROR",
@@ -441,8 +445,6 @@ def _full_sync(context, event=None):
                     "full_sync_chunk_store_failed",
                     error_type=type(e).__name__,
                 )
-                # Can't resume without chunks — disable self-invocation
-                sync_id = None
 
         start_index = 0
 
@@ -516,7 +518,7 @@ def _full_sync(context, event=None):
 
     if timed_out:
         # Checkpoint and self-invoke
-        if sync_id is not None and last_processed_index is not None:
+        if can_resume and sync_id is not None and last_processed_index is not None:
             if chain_depth + 1 >= MAX_CHAIN_DEPTH:
                 common.log_action(
                     "ERROR",
