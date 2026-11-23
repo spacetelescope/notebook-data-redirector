@@ -460,8 +460,9 @@ def _get_box_resource(callback):
 def iterate_files(folder, shared=False, include_folders=False):
     """Yield (item, shared) for every file under folder.
 
-    With include_folders, also yield each subfolder that has its own public shared link
-    (every folder gets one, so folder paths can redirect to the folder's Box page).
+    With include_folders, also yield each shared subfolder. A yielded folder may not have
+    its own link yet (it inherits access from a parent); callers create it during their
+    checkpointed processing, keeping this listing pass to read-only calls in the common case.
     """
     offset = 0
     while True:
@@ -469,7 +470,8 @@ def iterate_files(folder, shared=False, include_folders=False):
         for item in folder.get_items(limit=GET_ITEMS_LIMIT, offset=offset, fields=GET_ITEMS_FIELDS):
             count += 1
             if item.object_type == "folder":
-                if not is_box_object_public(item):
+                folder_public = is_box_object_public(item)
+                if not (shared or folder_public):
                     try:
                         item = with_box_retry(item.create_shared_link, access="open", allow_download=True)
                         log_action("INFO", "sync", "fix_folder_sharing", folder_id=item.id)
@@ -481,10 +483,11 @@ def iterate_files(folder, shared=False, include_folders=False):
                             folder_id=item.id,
                             error_type=type(e).__name__,
                         )
-                folder_public = is_box_object_public(item)
-                if include_folders and folder_public:
+                    folder_public = is_box_object_public(item)
+                folder_shared = shared or folder_public
+                if include_folders and folder_shared:
                     yield item, True
-                yield from iterate_files(item, shared=shared or folder_public, include_folders=include_folders)
+                yield from iterate_files(item, shared=folder_shared, include_folders=include_folders)
             elif item.object_type == "file":
                 yield item, shared
         if count >= GET_ITEMS_LIMIT:

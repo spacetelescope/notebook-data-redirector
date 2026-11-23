@@ -254,8 +254,12 @@ def _process_folder_enumeration(work_item, checkpoint, manifest_table, queue_tab
             return
 
         if file.object_type == "folder":
-            # iterate_files only yields folders that have a public link
+            # iterate_files yields shared folders; give each its own link so it can be a redirect target
             # ponytail: a renamed folder's old path entry lingers until the weekly full-sync orphan sweep
+            if not common.is_box_object_public(file):
+                file = common.with_box_retry(
+                    common.create_shared_link, client, file, access="open", allow_download=True
+                )
             common.put_file_item(manifest_table, file)
             count += 1
             processed_count += 1

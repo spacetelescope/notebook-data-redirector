@@ -465,6 +465,21 @@ def test_iterate_files_fix_folder_sharing_failure_graceful(create_folder, create
     assert results[file_in_broken.id] is False
 
 
+def test_iterate_files_lists_inherited_folders_without_creating_links(
+    create_shared_folder, create_folder, create_file, managed_folder, monkeypatch
+):
+    """Folders shared via a parent are yielded as-is; link creation is left to checkpointed processing."""
+    parent = create_shared_folder(parent_folder=managed_folder)
+    child = create_folder(parent_folder=parent)
+    monkeypatch.setattr(child, "create_shared_link", MagicMock(side_effect=AssertionError("no writes while listing")))
+    f = create_file(parent_folder=child)
+
+    results = {item.id: shared for item, shared in common.iterate_files(managed_folder, include_folders=True)}
+
+    assert results == {parent.id: True, child.id: True, f.id: True}
+    assert child.shared_link is None
+
+
 class TestValidateDownloadUrl:
     def _mock_response(self, status):
         resp = MagicMock()

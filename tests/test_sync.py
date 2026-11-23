@@ -270,6 +270,19 @@ class TestFullSyncState:
         # 2 files + the folder's own redirect entry
         assert sync_state_items[0]["items_checked"] == 3
 
+    def test_inherited_folder_gets_link_and_entry(
+        self, mock_context, ddb_items, create_shared_folder, create_folder, create_shared_file, managed_folder
+    ):
+        parent = create_shared_folder(parent_folder=managed_folder)
+        child = create_folder(parent_folder=parent)  # shared only through its parent
+        create_shared_file(parent_folder=child)
+
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        assert child.shared_link is not None
+        child_item = next(i for i in ddb_items if i.get("box_folder_id") == child.id)
+        assert child_item["download_url"] == child.shared_link["url"]
+
     def test_counts_orphans_deleted(self, sync_state_items, mock_context, ddb_items):
         ddb_items.append(
             {"filepath": "stale/file.dat", "box_file_id": "999", "download_url": "https://box.com/dl/stale"}
