@@ -413,9 +413,10 @@ def put_file_item(ddb_table, file):
 
     # this could cause concurrency issues in a scenario where lots of threads were operating on the ddb at once
     item = make_ddb_item(file)
-    result = ddb_table.get_item(Key={"filepath": item["filepath"]})
-    if result.get("Item") != item:
-        ddb_table.put_item(Item=item)
+    existing = ddb_table.get_item(Key={"filepath": item["filepath"]}).get("Item")
+    if existing is None or {k: v for k, v in existing.items() if k != "updated_at"} != item:
+        # updated_at lets full-sync orphan detection spare entries written after its enumeration snapshot
+        ddb_table.put_item(Item={**item, "updated_at": datetime.now(timezone.utc).isoformat()})
 
 
 def delete_file_item(ddb_table, file):
@@ -523,7 +524,7 @@ def repair_broken_url(filepath, manifest_item, manifest_table, caller="repair"):
             log_action("WARNING", caller, "folder_sharing_check_failed", filepath=filepath, error_type=type(e).__name__)
 
         item = make_ddb_item(file)
-        item["last_validated"] = datetime.now(timezone.utc).isoformat()
+        item["last_validated"] = item["updated_at"] = datetime.now(timezone.utc).isoformat()
         manifest_table.put_item(Item=item)
 
         log_action("INFO", caller, "repair_success", filepath=filepath, box_file_id=box_file_id)

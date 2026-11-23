@@ -283,6 +283,35 @@ class TestFullSyncState:
         child_item = next(i for i in ddb_items if i.get("box_folder_id") == child.id)
         assert child_item["download_url"] == child.shared_link["url"]
 
+    def test_orphan_detection_spares_entries_written_after_sync_start(self, sync_state_items, mock_context, ddb_items):
+        """Entries a webhook wrote mid-chain are absent from the enumeration snapshot but must survive."""
+        ddb_items.append({"filepath": "old/gone.dat", "box_file_id": "1", "download_url": "u1"})
+        ddb_items.append(
+            {
+                "filepath": "stale/written.dat",
+                "box_file_id": "2",
+                "download_url": "u2",
+                "updated_at": "2020-01-01T00:00:00",
+            }
+        )
+        ddb_items.append(
+            {
+                "filepath": "new/upload.dat",
+                "box_file_id": "3",
+                "download_url": "u3",
+                "updated_at": "2999-01-01T00:00:00",
+            }
+        )
+
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        assert [i["filepath"] for i in ddb_items] == ["new/upload.dat"]
+
+    def test_put_file_item_stamps_updated_at(self, ddb_items, create_shared_file, managed_folder):
+        f = create_shared_file(parent_folder=managed_folder)
+        common.put_file_item(common.get_ddb_table(), f)
+        assert ddb_items[0]["updated_at"]
+
     def test_counts_orphans_deleted(self, sync_state_items, mock_context, ddb_items):
         ddb_items.append(
             {"filepath": "stale/file.dat", "box_file_id": "999", "download_url": "https://box.com/dl/stale"}

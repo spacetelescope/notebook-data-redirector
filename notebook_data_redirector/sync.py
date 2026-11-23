@@ -601,12 +601,19 @@ def _full_sync(context, event=None):
             shared_file_ids.add(entry.get("box_folder_id") or entry["box_file_id"])
             shared_filepaths.add(entry["filepath"])
 
+    # Entries written after this sync started (e.g. webhook uploads mid-chain) are newer than the
+    # enumeration snapshot, so their absence from it proves nothing. sync_id embeds the start time.
+    sync_started = sync_id[len("full-sync-") :] if sync_id else None
     scan_response = ddb_table.scan()
     delete_keys = set()
+    spared = 0
     while True:
         for item in scan_response["Items"]:
             item_id = item.get("box_folder_id") or item.get("box_file_id")
             if (item_id not in shared_file_ids) or (item["filepath"] not in shared_filepaths):
+                if sync_started and item.get("updated_at", "") >= sync_started:
+                    spared += 1
+                    continue
                 delete_keys.add(item["filepath"])
 
         if scan_response.get("LastEvaluatedKey"):
@@ -617,7 +624,7 @@ def _full_sync(context, event=None):
     for key in delete_keys:
         ddb_table.delete_item(Key={"filepath": key})
     items_repaired += len(delete_keys)
-    common.log_action("INFO", "sync", "full_sync_orphans_deleted", count=len(delete_keys))
+    common.log_action("INFO", "sync", "full_sync_orphans_deleted", count=len(delete_keys), spared_newer=spared)
 
     # Cleanup chunks and complete
     if sync_id is not None:
