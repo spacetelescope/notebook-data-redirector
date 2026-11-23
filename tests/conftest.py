@@ -191,6 +191,7 @@ def create_shared_link():
             "effective_access": "open",
             "effective_permission": "can_download",
             "download_url": f"https://company.box.com/shared/static/{shared_id}.{suffix}",
+            "url": f"https://company.box.com/s/{shared_id}",
         }
         # from the tests we call create_shared_link slightly differently than we do from common. So I need to handle the way the real API call comes in
         access = kwargs.pop("access", "open")

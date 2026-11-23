@@ -521,10 +521,13 @@ class TestFileLevelTriage:
         event = self._make_event("FILE.UPLOADED", file.id)
         result = webhook_receiver.lambda_handler(event, {})
         assert result["statusCode"] == 200
-        assert len(ddb_items) == 1
-        assert ddb_items[0]["box_file_id"] == file.id
-        # Parent folder should have been auto-shared
+        assert [i["box_file_id"] for i in ddb_items if "box_file_id" in i] == [file.id]
+        # Parent folder should have been auto-shared and stored as a folder redirect
         assert unshared_folder.shared_link is not None
+        folder_item = next(i for i in ddb_items if "box_folder_id" in i)
+        assert folder_item["box_folder_id"] == unshared_folder.id
+        assert folder_item["filepath"] == unshared_folder.name
+        assert folder_item["download_url"] == unshared_folder.shared_link["url"]
 
 
 class TestFolderQueueWrite:

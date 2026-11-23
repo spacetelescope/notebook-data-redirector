@@ -177,9 +177,7 @@ def _store_file_list_chunks(sync_state_table, sync_id, file_list):
     chunk_count = 0
     for i in range(0, len(file_list), CHUNK_SIZE):
         chunk = file_list[i : i + CHUNK_SIZE]
-        serializable = [
-            {"filepath": f["filepath"], "box_file_id": f["box_file_id"], "shared": f["shared"]} for f in chunk
-        ]
+        serializable = [{k: v for k, v in f.items() if k != "file_ref"} for f in chunk]
         sync_state_table.put_item(
             Item={
                 "sync_id": f"{sync_id}:chunk:{chunk_count}",
@@ -421,11 +419,12 @@ def _full_sync(context, event=None):
 
         common.log_action("INFO", "sync", "full_sync_enumerating")
         file_list = []
-        for file, shared in common.iterate_files(root_folder, shared=root_shared):
+        for file, shared in common.iterate_files(root_folder, shared=root_shared, include_folders=True):
+            id_key = "box_folder_id" if file.object_type == "folder" else "box_file_id"
             file_list.append(
                 {
                     "filepath": common.get_filepath(file),
-                    "box_file_id": file.id,
+                    id_key: file.id,
                     "shared": shared,
                     "file_ref": file,
                 }
@@ -461,7 +460,8 @@ def _full_sync(context, event=None):
 
         entry = file_list[idx]
         filepath = entry["filepath"]
-        box_file_id = entry["box_file_id"]
+        box_folder_id = entry.get("box_folder_id")
+        box_file_id = box_folder_id or entry["box_file_id"]
         shared = entry["shared"]
         file_ref = entry.get("file_ref")
 
@@ -474,7 +474,8 @@ def _full_sync(context, event=None):
         # Get file object if we don't have it (resume case)
         if file_ref is None:
             try:
-                file_ref = common.with_box_retry(common.get_file, box_client, box_file_id)
+                getter = common.get_folder if box_folder_id else common.get_file
+                file_ref = common.with_box_retry(getter, box_client, box_file_id)
             except Exception as e:
                 common.log_action(
                     "WARNING",
@@ -596,14 +597,15 @@ def _full_sync(context, event=None):
     shared_filepaths = set()
     for entry in file_list:
         if entry["shared"]:
-            shared_file_ids.add(entry["box_file_id"])
+            shared_file_ids.add(entry.get("box_folder_id") or entry["box_file_id"])
             shared_filepaths.add(entry["filepath"])
 
     scan_response = ddb_table.scan()
     delete_keys = set()
     while True:
         for item in scan_response["Items"]:
-            if (item["box_file_id"] not in shared_file_ids) or (item["filepath"] not in shared_filepaths):
+            item_id = item.get("box_folder_id") or item.get("box_file_id")
+            if (item_id not in shared_file_ids) or (item["filepath"] not in shared_filepaths):
                 delete_keys.add(item["filepath"])
 
         if scan_response.get("LastEvaluatedKey"):

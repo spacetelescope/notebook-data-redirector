@@ -71,6 +71,17 @@ class TestRedirector:
         assert result["statusCode"] == 302
         assert result["headers"]["Location"] == expected_location
 
+    @pytest.mark.parametrize("suffix", ["", "/"])
+    def test_redirect_folder_path(
+        self, create_redirector_event, mock_queue_table, create_shared_folder, managed_folder, ddb_items, suffix
+    ):
+        subfolder = create_shared_folder(parent_folder=managed_folder, name="Build23")
+        ddb_items.append(common.make_ddb_item(subfolder))
+
+        result = redirector.lambda_handler(create_redirector_event("Build23" + suffix), None)
+        assert result["statusCode"] == 302
+        assert result["headers"]["Location"] == subfolder.shared_link["url"]
+
 
 class TestAsyncQueueWrite:
     @pytest.fixture(autouse=True)

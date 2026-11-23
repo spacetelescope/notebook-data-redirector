@@ -69,9 +69,12 @@ class TestSync:
 
         sync.lambda_handler({"mode": "full-sync"}, mock_context)
 
-        assert len(ddb_items) == 3
-        file_ids = {i["box_file_id"] for i in ddb_items}
+        file_ids = {i["box_file_id"] for i in ddb_items if "box_file_id" in i}
         assert file_ids == {correct_file.id, missing_file.id, unshared_file.id}
+        folder_items = [i for i in ddb_items if "box_folder_id" in i]
+        assert [i["box_folder_id"] for i in folder_items] == [shared_folder.id]
+        assert folder_items[0]["download_url"] == shared_folder.shared_link["url"]
+        assert len(ddb_items) == 4
         assert common.is_box_object_public(shared_file) is False
 
     def test_sync_ddb_paging(self, ddb_items, mock_context):
@@ -147,6 +150,19 @@ class TestRepairBrokenUrl:
         log_lines = capture_log.getvalue().strip().split("\n")
         actions = [json.loads(line)["action"] for line in log_lines]
         assert "repair_success" in actions
+
+    def test_repair_folder_entry(self, monkeypatch, mock_ddb_table, ddb_items, data_folder, mock_box_client):
+        item = {"filepath": "data", "box_folder_id": data_folder.id, "download_url": "https://box.com/s/old"}
+        ddb_items.append(item)
+        monkeypatch.setattr(common, "get_box_client", lambda: mock_box_client)
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+
+        result = common.repair_broken_url("data", item, mock_ddb_table)
+
+        assert result == "repaired"
+        assert len(ddb_items) == 1
+        assert ddb_items[0]["box_folder_id"] == data_folder.id
+        assert ddb_items[0]["download_url"] == data_folder.shared_link["url"]
 
     def test_file_not_found_deletes_manifest(self, monkeypatch, mock_ddb_table, ddb_items, manifest_item, capture_log):
         ddb_items.append(manifest_item)
@@ -250,7 +266,8 @@ class TestFullSyncState:
 
         sync.lambda_handler({"mode": "full-sync"}, mock_context)
 
-        assert sync_state_items[0]["items_checked"] == 2
+        # 2 files + the folder's own redirect entry
+        assert sync_state_items[0]["items_checked"] == 3
 
     def test_counts_orphans_deleted(self, sync_state_items, mock_context, ddb_items):
         ddb_items.append(
@@ -1183,6 +1200,50 @@ class TestFullSyncCheckpoint:
         for f in created_files:
             assert f.id in file_ids
 
+    def test_resume_processes_folder_entries(
+        self,
+        monkeypatch,
+        sync_state_items,
+        ddb_items,
+        mock_context,
+        mock_box_client,
+        create_shared_file,
+        create_folder,
+        managed_folder,
+    ):
+        folder = create_folder(parent_folder=managed_folder)  # no link yet: resume must fetch and share it
+        f = create_shared_file(parent_folder=folder)
+        files = [
+            {"filepath": common.get_filepath(folder), "box_folder_id": folder.id, "shared": True},
+            {"filepath": common.get_filepath(f), "box_file_id": f.id, "shared": True},
+        ]
+        sync_id = "full-sync-2026-03-18T12:00:00"
+        sync_state_items.append(
+            {
+                "sync_id": sync_id,
+                "mode": "full-sync",
+                "status": "partial",
+                "started_at": "2026-03-18T12:00:00+00:00",
+                "chunk_count": 1,
+                "last_chunk_index": 0,
+                "last_file_index": -1,
+                "chain_depth": 0,
+                "expires_at": 9999999999,
+            }
+        )
+        sync_state_items.append({"sync_id": f"{sync_id}:chunk:0", "files": files, "expires_at": 9999999999})
+        monkeypatch.setattr(common, "with_box_retry", lambda func, *a, **kw: func(*a, **kw))
+
+        sync.lambda_handler(
+            {"mode": "full-sync", "sync_id": sync_id, "resume": True, "chain_depth": 1},
+            mock_context,
+        )
+
+        # both survive orphan detection; the folder entry points at its new shared page
+        folder_item = next(i for i in ddb_items if i.get("box_folder_id") == folder.id)
+        assert folder_item["download_url"] == folder.shared_link["url"]
+        assert {i.get("box_file_id") for i in ddb_items} == {None, f.id}
+
     def test_invalid_checkpoint_falls_back_to_fresh(
         self,
         monkeypatch,
@@ -1346,8 +1407,8 @@ class TestFullSyncCheckpoint:
 
         sync.lambda_handler({"mode": "full-sync"}, mock_context)
 
-        assert len(ddb_items) == 1
-        assert ddb_items[0]["box_file_id"] == new_file.id
+        assert [i["box_file_id"] for i in ddb_items if "box_file_id" in i] == [new_file.id]
+        assert [i["box_folder_id"] for i in ddb_items if "box_folder_id" in i] == [shared_folder.id]
 
 
 class TestFullSyncChunkStoreFailure:

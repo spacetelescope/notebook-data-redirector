@@ -37,7 +37,8 @@ def _maybe_queue_validation(filepath, download_url):
 
 
 def lambda_handler(event, context):
-    filepath = urllib.parse.unquote(event["pathParameters"]["filepath"])
+    # folder paths may arrive with a trailing slash; manifest keys never have one
+    filepath = urllib.parse.unquote(event["pathParameters"]["filepath"]).rstrip("/")
 
     common.log_action("INFO", "redirector", "request_received", filepath=filepath)
 

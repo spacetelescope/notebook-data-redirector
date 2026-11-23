@@ -9,7 +9,7 @@ STATUS_SUCCESS = {"statusCode": 200}
 def _share_and_store_if_public(client, ddb, file):
     """Ensure parent folders are shared, share file, store in manifest."""
     try:
-        common.ensure_folder_shared(client, file)
+        common.ensure_folder_shared(client, file, ddb_table=ddb)
     except Exception as e:
         common.log_action(
             "WARNING",

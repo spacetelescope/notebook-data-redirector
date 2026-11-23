@@ -237,8 +237,9 @@ class TestFolderEnumeration:
             work_item, None, mock_ddb_table, mock_webhook_queue_table, MockFolderCacheTable(), mock_context
         )
 
-        assert len(ddb_items) == 3
+        assert len(ddb_items) == 4
         filepaths = {item["filepath"] for item in ddb_items}
+        assert "test-folder-99001" in filepaths  # the folder's own redirect
         assert "test-folder-99001/file1.txt" in filepaths
         assert "test-folder-99001/file2.txt" in filepaths
         assert "test-folder-99001/file3.txt" in filepaths
@@ -282,10 +283,15 @@ class TestFolderEnumeration:
             work_item, None, mock_ddb_table, mock_webhook_queue_table, MagicMock(), mock_context
         )
 
-        assert len(ddb_items) == 2
         filepaths = {item["filepath"] for item in ddb_items}
-        assert "test-folder-99002/top.txt" in filepaths
-        assert "test-folder-99002/test-folder-99003/nested.txt" in filepaths
+        assert filepaths == {
+            "test-folder-99002",
+            "test-folder-99002/test-folder-99003",
+            "test-folder-99002/top.txt",
+            "test-folder-99002/test-folder-99003/nested.txt",
+        }
+        # the subfolder had no link of its own; it gets one so it can be a redirect target
+        assert child_folder.shared_link is not None
 
     def test_folder_sharing_corrected(
         self,
@@ -838,7 +844,11 @@ class TestLambdaHandlerIntegration:
 
         result = webhook_worker.lambda_handler(event, mock_context)
         assert result == {"statusCode": 200}
-        assert len(ddb_items) == 2
+        assert {i["filepath"] for i in ddb_items} == {
+            "test-folder-77001",
+            "test-folder-77001/readme.md",
+            "test-folder-77001/data.csv",
+        }
 
     def test_full_flow_folder_deleted(
         self,

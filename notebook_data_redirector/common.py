@@ -328,11 +328,12 @@ def _cache_folder_sharing(folder_id, public):
     _folder_sharing_cache[folder_id] = {"public": public, "checked_at": time.time()}
 
 
-def ensure_folder_shared(client, file):
+def ensure_folder_shared(client, file, ddb_table=None):
     """Walk ancestor folders from file toward root, correcting sharing as needed.
 
     Stops early if an ancestor is already correctly shared (inheritance).
     Uses module-level cache to avoid redundant Box API calls within an invocation.
+    If ddb_table is given, folders that get a new shared link are stored as folder redirects.
     """
     entries = file.path_collection["entries"]
     folder_ids = [e["id"] for e in entries]
@@ -359,9 +360,11 @@ def ensure_folder_shared(client, file):
                 break  # correctly shared — stop walking
 
         # Need to fix sharing
-        with_box_retry(folder.create_shared_link, access="open", allow_download=True)
+        folder = with_box_retry(folder.create_shared_link, access="open", allow_download=True)
         log_action("INFO", "sync", "fix_folder_sharing", folder_id=folder_id)
         _cache_folder_sharing(folder_id, True)
+        if ddb_table is not None and folder_id != BOX_FOLDER_ID:
+            put_file_item(ddb_table, folder)
 
 
 def create_shared_link(client, file, **boxargs):
@@ -398,6 +401,9 @@ def get_filepath(file):
 
 
 def make_ddb_item(file):
+    if file.object_type == "folder":
+        # folder redirects go to the folder's shared page (folders have no download_url)
+        return {"filepath": get_filepath(file), "box_folder_id": file.id, "download_url": file.shared_link["url"]}
     return {"filepath": get_filepath(file), "box_file_id": file.id, "download_url": file.shared_link["download_url"]}
 
 
@@ -451,19 +457,22 @@ def _get_box_resource(callback):
             raise e
 
 
-def iterate_files(folder, shared=False):
+def iterate_files(folder, shared=False, include_folders=False):
+    """Yield (item, shared) for every file under folder.
+
+    With include_folders, also yield each subfolder that has its own public shared link
+    (every folder gets one, so folder paths can redirect to the folder's Box page).
+    """
     offset = 0
     while True:
         count = 0
         for item in folder.get_items(limit=GET_ITEMS_LIMIT, offset=offset, fields=GET_ITEMS_FIELDS):
             count += 1
             if item.object_type == "folder":
-                folder_shared = shared or is_box_object_public(item)
-                if not folder_shared:
+                if not is_box_object_public(item):
                     try:
-                        with_box_retry(item.create_shared_link, access="open", allow_download=True)
+                        item = with_box_retry(item.create_shared_link, access="open", allow_download=True)
                         log_action("INFO", "sync", "fix_folder_sharing", folder_id=item.id)
-                        folder_shared = True
                     except Exception as e:
                         log_action(
                             "WARNING",
@@ -472,7 +481,10 @@ def iterate_files(folder, shared=False):
                             folder_id=item.id,
                             error_type=type(e).__name__,
                         )
-                yield from iterate_files(item, shared=folder_shared)
+                folder_public = is_box_object_public(item)
+                if include_folders and folder_public:
+                    yield item, True
+                yield from iterate_files(item, shared=shared or folder_public, include_folders=include_folders)
             elif item.object_type == "file":
                 yield item, shared
         if count >= GET_ITEMS_LIMIT:
@@ -489,8 +501,10 @@ def repair_broken_url(filepath, manifest_item, manifest_table, caller="repair"):
     """
     try:
         client = get_box_client()
-        box_file_id = manifest_item["box_file_id"]
-        file = with_box_retry(get_file, client, box_file_id)
+        # folder redirect entries carry box_folder_id instead of box_file_id
+        box_folder_id = manifest_item.get("box_folder_id")
+        box_file_id = box_folder_id or manifest_item["box_file_id"]
+        file = with_box_retry(get_folder if box_folder_id else get_file, client, box_file_id)
 
         if file is None:
             manifest_table.delete_item(Key={"filepath": filepath})

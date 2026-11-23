@@ -198,7 +198,7 @@ def _process_folder_enumeration(work_item, checkpoint, manifest_table, queue_tab
     # Correct folder sharing if needed
     if not root_shared:
         try:
-            folder.create_shared_link(access="open", allow_download=True)
+            folder = folder.create_shared_link(access="open", allow_download=True)
             root_shared = True
             folder_cache_table.put_item(
                 Item={
@@ -223,11 +223,14 @@ def _process_folder_enumeration(work_item, checkpoint, manifest_table, queue_tab
                 error_type=type(e).__name__,
             )
 
+    if root_shared and folder_id != common.BOX_FOLDER_ID:
+        common.put_file_item(manifest_table, folder)
+
     offset = checkpoint.get("last_offset", 0) if checkpoint else 0
     processed_count = checkpoint.get("processed_count", 0) if checkpoint else 0
     count = 0
 
-    for file, shared in common.iterate_files(folder, shared=root_shared):
+    for file, shared in common.iterate_files(folder, shared=root_shared, include_folders=True):
         if count < offset:
             count += 1
             continue
@@ -249,6 +252,14 @@ def _process_folder_enumeration(work_item, checkpoint, manifest_table, queue_tab
                 checkpoint={"last_offset": count, "processed_count": processed_count},
             )
             return
+
+        if file.object_type == "folder":
+            # iterate_files only yields folders that have a public link
+            # ponytail: a renamed folder's old path entry lingers until the weekly full-sync orphan sweep
+            common.put_file_item(manifest_table, file)
+            count += 1
+            processed_count += 1
+            continue
 
         # Apply sharing logic (same pattern as _full_sync)
         if (not common.is_box_object_public(file)) and shared:
