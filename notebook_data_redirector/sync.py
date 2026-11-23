@@ -370,13 +370,14 @@ def _full_sync(context, event=None):
         result = sync_state_table.get_item(Key={"sync_id": sync_id})
         if "Item" in result:
             checkpoint = result["Item"]
-            chunk_count = checkpoint.get("chunk_count", 0)
-            last_chunk = checkpoint.get("last_chunk_index", 0)
-            last_file = checkpoint.get("last_file_index", -1)
+            # DDB returns numbers as Decimal; range() and list indexing need int
+            chunk_count = int(checkpoint.get("chunk_count", 0))
+            last_chunk = int(checkpoint.get("last_chunk_index", 0))
+            last_file = int(checkpoint.get("last_file_index", -1))
             start_index = last_chunk * CHUNK_SIZE + last_file + 1
-            items_checked = checkpoint.get("items_checked", 0)
-            items_valid = checkpoint.get("items_valid", 0)
-            items_repaired = checkpoint.get("items_repaired", 0)
+            items_checked = int(checkpoint.get("items_checked", 0))
+            items_valid = int(checkpoint.get("items_valid", 0))
+            items_repaired = int(checkpoint.get("items_repaired", 0))
 
             file_list = _load_file_list_chunks(sync_state_table, sync_id, chunk_count)
             if file_list is not None:
@@ -400,7 +401,7 @@ def _full_sync(context, event=None):
         stale = _find_full_sync_checkpoint(sync_state_table)
         if stale:
             stale_id = stale["sync_id"]
-            _cleanup_chunks(sync_state_table, stale_id, stale.get("chunk_count", 0))
+            _cleanup_chunks(sync_state_table, stale_id, int(stale.get("chunk_count", 0)))
             try:
                 _fail_sync_state(sync_state_table, stale_id)
             except Exception:

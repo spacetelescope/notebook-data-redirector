@@ -1,5 +1,6 @@
 import json
 from datetime import datetime, timezone, timedelta
+from decimal import Decimal
 from unittest.mock import MagicMock
 
 import pytest
@@ -1165,13 +1166,14 @@ class TestFullSyncCheckpoint:
                 "mode": "full-sync",
                 "status": "partial",
                 "started_at": "2026-03-18T12:00:00+00:00",
-                "chunk_count": 1,
-                "last_chunk_index": 0,
-                "last_file_index": 1,
-                "chain_depth": 0,
-                "items_checked": 2,
-                "items_valid": 2,
-                "items_repaired": 0,
+                # real DDB reads return numbers as Decimal
+                "chunk_count": Decimal(1),
+                "last_chunk_index": Decimal(0),
+                "last_file_index": Decimal(1),
+                "chain_depth": Decimal(0),
+                "items_checked": Decimal(2),
+                "items_valid": Decimal(2),
+                "items_repaired": Decimal(0),
                 "expires_at": 9999999999,
             }
         )
@@ -1199,6 +1201,29 @@ class TestFullSyncCheckpoint:
         file_ids = {item["box_file_id"] for item in ddb_items}
         for f in created_files:
             assert f.id in file_ids
+
+    def test_fresh_sync_cleans_stale_partial_with_decimal_chunk_count(
+        self, sync_state_items, ddb_items, mock_context, create_shared_file, create_shared_folder, managed_folder
+    ):
+        """A stale partial record read back from DDB (Decimal numbers) must not crash a fresh full sync."""
+        folder = create_shared_folder(parent_folder=managed_folder)
+        f = create_shared_file(parent_folder=folder)
+        stale_id = "full-sync-2026-11-08T03:00:15"
+        sync_state_items.append(
+            {
+                "sync_id": stale_id,
+                "mode": "full-sync",
+                "status": "partial",
+                "started_at": "2026-11-08T03:00:15+00:00",
+                "chunk_count": Decimal(2),
+            }
+        )
+        sync_state_items.append({"sync_id": f"{stale_id}:chunk:0", "files": [], "expires_at": 9999999999})
+
+        sync.lambda_handler({"mode": "full-sync"}, mock_context)
+
+        assert [i["box_file_id"] for i in ddb_items if "box_file_id" in i] == [f.id]
+        assert not any(i["sync_id"].startswith(f"{stale_id}:chunk") for i in sync_state_items)
 
     def test_resume_processes_folder_entries(
         self,
